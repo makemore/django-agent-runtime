@@ -20,7 +20,17 @@ class AgentConversation(AbstractAgentConversation):
     Default concrete implementation of AgentConversation.
 
     Groups related agent runs into a conversation.
+    Supports both authenticated users and anonymous sessions.
     """
+
+    # Optional anonymous session association
+    anonymous_session = models.ForeignKey(
+        "accounts.AnonymousSession",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="agent_conversations",
+    )
 
     class Meta(AbstractAgentConversation.Meta):
         abstract = False

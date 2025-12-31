@@ -173,6 +173,116 @@ class TestAgentRunAPI:
         """Test that cancelling a completed run fails."""
         url = reverse("v1:agent_runtime:run-cancel", args=[completed_run.id])
         response = authenticated_client.post(url)
-        
+
         assert response.status_code == status.HTTP_400_BAD_REQUEST
 
+
+@pytest.mark.django_db
+class TestAnonymousSessionAPI:
+    """Tests for anonymous session authentication."""
+
+    @pytest.fixture
+    def anonymous_session(self, db):
+        """Create an anonymous session."""
+        from accounts.models import AnonymousSession
+        return AnonymousSession.objects.create()
+
+    def test_create_conversation_with_anonymous_token(self, api_client, anonymous_session):
+        """Test creating a conversation with anonymous token."""
+        url = reverse("v1:agent_runtime:conversation-list")
+        data = {
+            "agent_key": "test-agent",
+            "title": "Anonymous Conversation",
+        }
+
+        response = api_client.post(
+            url,
+            data,
+            format="json",
+            HTTP_X_ANONYMOUS_TOKEN=anonymous_session.token,
+        )
+
+        assert response.status_code == status.HTTP_201_CREATED
+        assert response.data["agent_key"] == "test-agent"
+
+        # Verify conversation is linked to anonymous session
+        conv = AgentConversation.objects.get(id=response.data["id"])
+        assert conv.anonymous_session == anonymous_session
+        assert conv.user is None
+
+    def test_list_conversations_with_anonymous_token(self, api_client, anonymous_session):
+        """Test listing conversations with anonymous token."""
+        # Create a conversation for this session
+        conv = AgentConversation.objects.create(
+            anonymous_session=anonymous_session,
+            agent_key="test-agent",
+        )
+
+        url = reverse("v1:agent_runtime:conversation-list")
+        response = api_client.get(
+            url,
+            HTTP_X_ANONYMOUS_TOKEN=anonymous_session.token,
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        # Handle paginated response
+        results = response.data.get("results", response.data)
+        assert len(results) == 1
+        assert results[0]["id"] == str(conv.id)
+
+    def test_create_run_with_anonymous_token(self, api_client, anonymous_session):
+        """Test creating a run with anonymous token."""
+        # Create a conversation first
+        conv = AgentConversation.objects.create(
+            anonymous_session=anonymous_session,
+            agent_key="test-agent",
+        )
+
+        url = reverse("v1:agent_runtime:run-list")
+        data = {
+            "agent_key": "test-agent",
+            "conversation_id": str(conv.id),
+            "messages": [{"role": "user", "content": "Hello"}],
+        }
+
+        response = api_client.post(
+            url,
+            data,
+            format="json",
+            HTTP_X_ANONYMOUS_TOKEN=anonymous_session.token,
+        )
+
+        assert response.status_code == status.HTTP_201_CREATED
+        assert response.data["agent_key"] == "test-agent"
+
+        # Verify metadata contains anonymous token
+        run = AgentRun.objects.get(id=response.data["id"])
+        assert run.metadata.get("anonymous_token") == anonymous_session.token
+
+    def test_invalid_anonymous_token_rejected(self, api_client):
+        """Test that invalid anonymous tokens are rejected."""
+        url = reverse("v1:agent_runtime:conversation-list")
+        response = api_client.get(
+            url,
+            HTTP_X_ANONYMOUS_TOKEN="invalid-token",
+        )
+
+        assert response.status_code == status.HTTP_401_UNAUTHORIZED
+
+    def test_expired_anonymous_session_rejected(self, api_client, db):
+        """Test that expired anonymous sessions are rejected."""
+        from accounts.models import AnonymousSession
+        from django.utils import timezone
+        from datetime import timedelta
+
+        expired_session = AnonymousSession.objects.create(
+            expires_at=timezone.now() - timedelta(days=1)
+        )
+
+        url = reverse("v1:agent_runtime:conversation-list")
+        response = api_client.get(
+            url,
+            HTTP_X_ANONYMOUS_TOKEN=expired_session.token,
+        )
+
+        assert response.status_code == status.HTTP_401_UNAUTHORIZED

@@ -17,6 +17,7 @@ from rest_framework.routers import DefaultRouter
 from django_agent_runtime.api.views import (
     AgentRunViewSet,
     AgentConversationViewSet,
+    sync_event_stream,
     async_event_stream,
 )
 
@@ -30,6 +31,8 @@ router.register(r"runs", AgentRunViewSet, basename="run")
 urlpatterns = [
     # REST API endpoints
     path("", include(router.urls)),
+    # SSE endpoint for event streaming (sync version for WSGI)
+    path("runs/<str:run_id>/events/", sync_event_stream, name="run-events"),
     # Async SSE endpoint (for ASGI deployments)
     path("runs/<str:run_id>/stream/", async_event_stream, name="run-stream"),
 ]

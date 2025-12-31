@@ -1,5 +1,7 @@
 """
 API views for agent runtime.
+
+Supports both authenticated users and anonymous sessions via X-Anonymous-Token header.
 """
 
 import asyncio
@@ -11,6 +13,7 @@ from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
+from rest_framework.authentication import TokenAuthentication, SessionAuthentication
 
 from django_agent_runtime.models import AgentRun, AgentConversation, AgentEvent
 from django_agent_runtime.models.base import RunStatus
@@ -21,24 +24,44 @@ from django_agent_runtime.api.serializers import (
     AgentConversationSerializer,
     AgentEventSerializer,
 )
+from django_agent_runtime.api.permissions import (
+    AnonymousSessionAuthentication,
+    IsAuthenticatedOrAnonymousSession,
+    get_anonymous_session,
+)
 from django_agent_runtime.conf import runtime_settings, get_hook
 
 
 class AgentConversationViewSet(viewsets.ModelViewSet):
     """
     ViewSet for managing agent conversations.
+
+    Supports both authenticated users and anonymous sessions.
     """
 
     serializer_class = AgentConversationSerializer
-    permission_classes = [IsAuthenticated]
+    authentication_classes = [TokenAuthentication, SessionAuthentication, AnonymousSessionAuthentication]
+    permission_classes = [IsAuthenticatedOrAnonymousSession]
 
     def get_queryset(self):
-        """Filter conversations by user."""
-        return AgentConversation.objects.filter(user=self.request.user)
+        """Filter conversations by user or anonymous session."""
+        if self.request.user and self.request.user.is_authenticated:
+            return AgentConversation.objects.filter(user=self.request.user)
+
+        # For anonymous sessions, filter by anonymous_session
+        session = get_anonymous_session(self.request)
+        if session:
+            return AgentConversation.objects.filter(anonymous_session=session)
+
+        return AgentConversation.objects.none()
 
     def perform_create(self, serializer):
-        """Set user on creation."""
-        serializer.save(user=self.request.user)
+        """Set user or anonymous session on creation."""
+        if self.request.user and self.request.user.is_authenticated:
+            serializer.save(user=self.request.user)
+        else:
+            session = get_anonymous_session(self.request)
+            serializer.save(anonymous_session=session)
 
 
 class AgentRunViewSet(viewsets.ModelViewSet):
@@ -51,9 +74,12 @@ class AgentRunViewSet(viewsets.ModelViewSet):
     - GET /runs/{id}/ - Get run details
     - POST /runs/{id}/cancel/ - Cancel a run
     - GET /runs/{id}/events/ - Get events (SSE)
+
+    Supports both authenticated users and anonymous sessions.
     """
 
-    permission_classes = [IsAuthenticated]
+    authentication_classes = [TokenAuthentication, SessionAuthentication, AnonymousSessionAuthentication]
+    permission_classes = [IsAuthenticatedOrAnonymousSession]
 
     def get_serializer_class(self):
         if self.action == "create":
@@ -63,10 +89,20 @@ class AgentRunViewSet(viewsets.ModelViewSet):
         return AgentRunSerializer
 
     def get_queryset(self):
-        """Filter runs by user's conversations."""
-        return AgentRun.objects.filter(
-            conversation__user=self.request.user
-        ).select_related("conversation")
+        """Filter runs by user's conversations or anonymous session."""
+        if self.request.user and self.request.user.is_authenticated:
+            return AgentRun.objects.filter(
+                conversation__user=self.request.user
+            ).select_related("conversation")
+
+        # For anonymous sessions
+        session = get_anonymous_session(self.request)
+        if session:
+            return AgentRun.objects.filter(
+                conversation__anonymous_session=session
+            ).select_related("conversation")
+
+        return AgentRun.objects.none()
 
     def create(self, request, *args, **kwargs):
         """Create a new agent run."""
@@ -76,31 +112,40 @@ class AgentRunViewSet(viewsets.ModelViewSet):
 
         data = serializer.validated_data
 
-        # Check authorization
+        # Check authorization (skip for anonymous sessions)
         settings = runtime_settings()
-        authz_hook = get_hook(settings.AUTHZ_HOOK)
-        if authz_hook and not authz_hook(request.user, "create_run", data):
-            return Response(
-                {"error": "Not authorized to create this run"},
-                status=status.HTTP_403_FORBIDDEN,
-            )
+        if request.user and request.user.is_authenticated:
+            authz_hook = get_hook(settings.AUTHZ_HOOK)
+            if authz_hook and not authz_hook(request.user, "create_run", data):
+                return Response(
+                    {"error": "Not authorized to create this run"},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
 
-        # Check quota
-        quota_hook = get_hook(settings.QUOTA_HOOK)
-        if quota_hook and not quota_hook(request.user, data["agent_key"]):
-            return Response(
-                {"error": "Quota exceeded"},
-                status=status.HTTP_429_TOO_MANY_REQUESTS,
-            )
+            # Check quota
+            quota_hook = get_hook(settings.QUOTA_HOOK)
+            if quota_hook and not quota_hook(request.user, data["agent_key"]):
+                return Response(
+                    {"error": "Quota exceeded"},
+                    status=status.HTTP_429_TOO_MANY_REQUESTS,
+                )
 
         # Get or create conversation
         conversation = None
+        session = get_anonymous_session(request)
+
         if data.get("conversation_id"):
             try:
-                conversation = AgentConversation.objects.get(
-                    id=data["conversation_id"],
-                    user=request.user,
-                )
+                if request.user and request.user.is_authenticated:
+                    conversation = AgentConversation.objects.get(
+                        id=data["conversation_id"],
+                        user=request.user,
+                    )
+                elif session:
+                    conversation = AgentConversation.objects.get(
+                        id=data["conversation_id"],
+                        anonymous_session=session,
+                    )
             except AgentConversation.DoesNotExist:
                 return Response(
                     {"error": "Conversation not found"},
@@ -118,6 +163,14 @@ class AgentRunViewSet(viewsets.ModelViewSet):
                     status=status.HTTP_200_OK,
                 )
 
+        # Build metadata with session info
+        metadata = {
+            **data.get("metadata", {}),
+            "conversation_id": str(conversation.id) if conversation else None,
+        }
+        if session:
+            metadata["anonymous_token"] = session.token
+
         # Create the run
         run = AgentRun.objects.create(
             conversation=conversation,
@@ -128,10 +181,7 @@ class AgentRunViewSet(viewsets.ModelViewSet):
             },
             max_attempts=data.get("max_attempts", 3),
             idempotency_key=data.get("idempotency_key"),
-            metadata={
-                **data.get("metadata", {}),
-                "conversation_id": str(conversation.id) if conversation else None,
-            },
+            metadata=metadata,
         )
 
         # Enqueue to Redis if using Redis queue
@@ -170,32 +220,6 @@ class AgentRunViewSet(viewsets.ModelViewSet):
         run.save(update_fields=["cancel_requested_at"])
 
         return Response({"status": "cancellation_requested"})
-
-    @action(detail=True, methods=["get"])
-    def events(self, request, pk=None):
-        """
-        Stream events for a run via Server-Sent Events (SSE).
-
-        Query params:
-        - from_seq: Start from this sequence number (default: 0)
-        """
-        run = self.get_object()
-        from_seq = int(request.query_params.get("from_seq", 0))
-
-        settings = runtime_settings()
-        if not settings.ENABLE_SSE:
-            return Response(
-                {"error": "SSE streaming is disabled"},
-                status=status.HTTP_503_SERVICE_UNAVAILABLE,
-            )
-
-        response = StreamingHttpResponse(
-            self._event_stream(run.id, from_seq),
-            content_type="text/event-stream",
-        )
-        response["Cache-Control"] = "no-cache"
-        response["X-Accel-Buffering"] = "no"
-        return response
 
     def _event_stream(self, run_id: UUID, from_seq: int):
         """Generate SSE event stream."""
@@ -253,6 +277,115 @@ class AgentRunViewSet(viewsets.ModelViewSet):
 
 
 # Async SSE view for ASGI deployments
+def sync_event_stream(request, run_id: str):
+    """
+    Sync SSE endpoint for streaming events.
+
+    This is a plain Django view (not DRF) to avoid content negotiation issues.
+    Supports both authenticated users and anonymous sessions.
+    """
+    import time
+    from django.http import JsonResponse
+
+    try:
+        run_uuid = UUID(run_id)
+    except ValueError:
+        return JsonResponse({"error": "Invalid run ID"}, status=400)
+
+    from_seq = int(request.GET.get("from_seq", 0))
+
+    # Check authorization - support both auth methods
+    anonymous_token = request.headers.get('X-Anonymous-Token') or request.GET.get('anonymous_token')
+
+    try:
+        run = AgentRun.objects.select_related("conversation").get(id=run_uuid)
+    except AgentRun.DoesNotExist:
+        return JsonResponse({"error": "Run not found"}, status=404)
+
+    # Check access
+    has_access = False
+    if request.user and request.user.is_authenticated:
+        if run.conversation and run.conversation.user == request.user:
+            has_access = True
+        elif not run.conversation:
+            has_access = True
+    elif anonymous_token:
+        try:
+            from accounts.models import AnonymousSession
+            session = AnonymousSession.objects.get(token=anonymous_token)
+            if not session.is_expired:
+                if run.conversation and run.conversation.anonymous_session == session:
+                    has_access = True
+                elif not run.conversation:
+                    # Run without conversation - check metadata
+                    if run.metadata.get("anonymous_token") == anonymous_token:
+                        has_access = True
+        except Exception:
+            pass
+
+    if not has_access:
+        return JsonResponse({"error": "Not authorized"}, status=403)
+
+    settings = runtime_settings()
+    if not settings.ENABLE_SSE:
+        return JsonResponse({"error": "SSE streaming is disabled"}, status=503)
+
+    def event_generator():
+        current_seq = from_seq
+
+        while True:
+            # Get new events from database
+            events = list(
+                AgentEvent.objects.filter(
+                    run_id=run_uuid,
+                    seq__gte=current_seq,
+                ).order_by("seq")
+            )
+
+            for event in events:
+                data = {
+                    "run_id": str(event.run_id),
+                    "seq": event.seq,
+                    "type": event.event_type,
+                    "payload": event.payload,
+                    "ts": event.timestamp.isoformat(),
+                }
+                yield f"data: {json.dumps(data)}\n\n"
+                current_seq = event.seq + 1
+
+                # Check for terminal events
+                if event.event_type in (
+                    "run.succeeded",
+                    "run.failed",
+                    "run.cancelled",
+                    "run.timed_out",
+                ):
+                    return
+
+            # Check if run is complete
+            try:
+                run_check = AgentRun.objects.get(id=run_uuid)
+                if run_check.is_terminal:
+                    return
+            except AgentRun.DoesNotExist:
+                return
+
+            # Send keepalive
+            yield ": keepalive\n\n"
+
+            # Wait before polling again
+            time.sleep(0.5)
+
+    response = StreamingHttpResponse(
+        event_generator(),
+        content_type="text/event-stream",
+    )
+    response["Cache-Control"] = "no-cache"
+    response["X-Accel-Buffering"] = "no"
+    response["Access-Control-Allow-Origin"] = "*"
+    return response
+
+
 async def async_event_stream(request, run_id: str):
     """
     Async SSE endpoint for streaming events.

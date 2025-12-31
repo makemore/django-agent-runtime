@@ -26,6 +26,7 @@ class AbstractAgentConversation(models.Model):
     Abstract model for grouping related agent runs.
 
     A conversation represents a multi-turn interaction with an agent.
+    Supports both authenticated users and anonymous sessions.
     """
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -38,6 +39,10 @@ class AbstractAgentConversation(models.Model):
         blank=True,
         related_name="agent_conversations",
     )
+
+    # Optional anonymous session association
+    # Note: Concrete model should define this FK to avoid import issues
+    # anonymous_session = models.ForeignKey(...)
 
     # Agent identification
     agent_key = models.CharField(
@@ -62,6 +67,11 @@ class AbstractAgentConversation(models.Model):
 
     def __str__(self):
         return f"{self.agent_key} - {self.id}"
+
+    @property
+    def owner(self):
+        """Return the owner (User or AnonymousSession) of this conversation."""
+        return self.user or getattr(self, 'anonymous_session', None)
 
 
 class AbstractAgentRun(models.Model):
