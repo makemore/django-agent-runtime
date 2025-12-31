@@ -1,0 +1,103 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "django-agent-runtime"
+version = "0.1.0"
+description = "Production-grade AI agent runtime for Django - framework and model agnostic"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [
+    {name = "Your Name", email = "you@example.com"}
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Web Environment",
+    "Framework :: Django",
+    "Framework :: Django :: 4.2",
+    "Framework :: Django :: 5.0",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+keywords = ["django", "ai", "agent", "llm", "runtime", "async"]
+
+dependencies = [
+    "Django>=4.2",
+    "djangorestframework>=3.14",
+]
+
+[project.optional-dependencies]
+redis = [
+    "redis>=4.5.0",
+]
+openai = [
+    "openai>=1.0.0",
+]
+anthropic = [
+    "anthropic>=0.18.0",
+]
+litellm = [
+    "litellm>=1.0.0",
+]
+langfuse = [
+    "langfuse>=2.0.0",
+]
+all = [
+    "django-agent-runtime[redis,openai,anthropic,litellm,langfuse]",
+]
+dev = [
+    "pytest>=7.0",
+    "pytest-django>=4.5",
+    "pytest-asyncio>=0.21",
+    "pytest-cov>=4.0",
+    "black>=23.0",
+    "ruff>=0.1.0",
+    "mypy>=1.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/yourorg/django-agent-runtime"
+Documentation = "https://github.com/yourorg/django-agent-runtime#readme"
+Repository = "https://github.com/yourorg/django-agent-runtime"
+Issues = "https://github.com/yourorg/django-agent-runtime/issues"
+
+[project.entry-points."django_agent_runtime.runtimes"]
+# Example: plugins can register here
+# my_runtime = "my_plugin.runtime:register"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["django_agent_runtime*"]
+
+[tool.black]
+line-length = 100
+target-version = ["py310", "py311", "py312"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "best.settings.dev"
+python_files = ["test_*.py", "*_test.py"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+

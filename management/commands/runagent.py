@@ -1,0 +1,331 @@
+"""
+Management command to run agent workers.
+
+Usage:
+    ./manage.py runagent
+    ./manage.py runagent --processes 4 --concurrency 20
+    ./manage.py runagent --queue redis --agent-keys my-agent,other-agent
+"""
+
+import asyncio
+import logging
+import multiprocessing
+import os
+import signal
+import sys
+import uuid
+from typing import Optional
+
+from django.core.management.base import BaseCommand
+
+logger = logging.getLogger(__name__)
+
+
+class Command(BaseCommand):
+    help = "Run agent workers to process agent runs"
+
+    def add_arguments(self, parser):
+        parser.add_argument(
+            "--processes",
+            type=int,
+            default=None,
+            help="Number of worker processes (default: from settings or 1)",
+        )
+        parser.add_argument(
+            "--concurrency",
+            type=int,
+            default=None,
+            help="Async concurrency per process (default: from settings or 10)",
+        )
+        parser.add_argument(
+            "--queue",
+            type=str,
+            default=None,
+            choices=["postgres", "redis_streams"],
+            help="Queue backend (default: from settings)",
+        )
+        parser.add_argument(
+            "--agent-keys",
+            type=str,
+            default=None,
+            help="Comma-separated list of agent keys to process (default: all)",
+        )
+        parser.add_argument(
+            "--lease-ttl-seconds",
+            type=int,
+            default=None,
+            help="Lease TTL in seconds (default: from settings)",
+        )
+        parser.add_argument(
+            "--run-timeout-seconds",
+            type=int,
+            default=None,
+            help="Run timeout in seconds (default: from settings)",
+        )
+        parser.add_argument(
+            "--max-attempts",
+            type=int,
+            default=None,
+            help="Max retry attempts (default: from settings)",
+        )
+        parser.add_argument(
+            "--worker-id",
+            type=str,
+            default=None,
+            help="Worker ID (default: auto-generated)",
+        )
+
+    def handle(self, *args, **options):
+        from django_agent_runtime.conf import runtime_settings
+
+        settings = runtime_settings()
+
+        # Get configuration
+        processes = options["processes"] or settings.DEFAULT_PROCESSES
+        concurrency = options["concurrency"] or settings.DEFAULT_CONCURRENCY
+        queue_backend = options["queue"] or settings.QUEUE_BACKEND
+        agent_keys = options["agent_keys"]
+        if agent_keys:
+            agent_keys = [k.strip() for k in agent_keys.split(",")]
+
+        self.stdout.write(
+            self.style.SUCCESS(
+                f"Starting agent runtime with {processes} process(es), "
+                f"{concurrency} concurrent tasks each"
+            )
+        )
+        self.stdout.write(f"Queue backend: {queue_backend}")
+        if agent_keys:
+            self.stdout.write(f"Agent keys: {agent_keys}")
+
+        if processes == 1:
+            # Single process mode - run directly
+            self._run_worker(
+                worker_num=0,
+                concurrency=concurrency,
+                queue_backend=queue_backend,
+                agent_keys=agent_keys,
+                options=options,
+            )
+        else:
+            # Multi-process mode
+            self._run_multiprocess(
+                processes=processes,
+                concurrency=concurrency,
+                queue_backend=queue_backend,
+                agent_keys=agent_keys,
+                options=options,
+            )
+
+    def _run_multiprocess(
+        self,
+        processes: int,
+        concurrency: int,
+        queue_backend: str,
+        agent_keys: Optional[list[str]],
+        options: dict,
+    ):
+        """Run multiple worker processes."""
+        workers = []
+
+        def signal_handler(signum, frame):
+            self.stdout.write("\nShutting down workers...")
+            for p in workers:
+                p.terminate()
+            for p in workers:
+                p.join(timeout=30)
+            sys.exit(0)
+
+        signal.signal(signal.SIGINT, signal_handler)
+        signal.signal(signal.SIGTERM, signal_handler)
+
+        for i in range(processes):
+            p = multiprocessing.Process(
+                target=self._run_worker,
+                args=(i, concurrency, queue_backend, agent_keys, options),
+            )
+            p.start()
+            workers.append(p)
+            self.stdout.write(f"Started worker process {i} (PID: {p.pid})")
+
+        # Wait for all workers
+        for p in workers:
+            p.join()
+
+    def _run_worker(
+        self,
+        worker_num: int,
+        concurrency: int,
+        queue_backend: str,
+        agent_keys: Optional[list[str]],
+        options: dict,
+    ):
+        """Run a single worker process."""
+        # Generate worker ID
+        worker_id = options.get("worker_id") or f"worker-{worker_num}-{uuid.uuid4().hex[:8]}"
+
+        # Run the async worker loop
+        asyncio.run(
+            self._async_worker_loop(
+                worker_id=worker_id,
+                concurrency=concurrency,
+                queue_backend=queue_backend,
+                agent_keys=agent_keys,
+                options=options,
+            )
+        )
+
+    async def _async_worker_loop(
+        self,
+        worker_id: str,
+        concurrency: int,
+        queue_backend: str,
+        agent_keys: Optional[list[str]],
+        options: dict,
+    ):
+        """Main async worker loop."""
+        from django_agent_runtime.conf import runtime_settings
+        from django_agent_runtime.runtime.queue import get_queue
+        from django_agent_runtime.runtime.events import get_event_bus
+        from django_agent_runtime.runtime.runner import AgentRunner
+        from django_agent_runtime.runtime.tracing import get_trace_sink
+
+        settings = runtime_settings()
+
+        # Initialize queue
+        queue_kwargs = {"lease_ttl_seconds": options.get("lease_ttl_seconds") or settings.LEASE_TTL_SECONDS}
+        if queue_backend == "redis_streams":
+            queue_kwargs["redis_url"] = settings.REDIS_URL
+
+        queue = get_queue(queue_backend, **queue_kwargs)
+
+        # Initialize event bus
+        event_bus_kwargs = {}
+        if settings.EVENT_BUS_BACKEND == "redis":
+            event_bus_kwargs["redis_url"] = settings.REDIS_URL
+            event_bus_kwargs["persist_to_db"] = True
+            event_bus_kwargs["persist_token_deltas"] = settings.PERSIST_TOKEN_DELTAS
+
+        event_bus = get_event_bus(settings.EVENT_BUS_BACKEND, **event_bus_kwargs)
+
+        # Initialize trace sink
+        trace_sink = get_trace_sink()
+
+        # Create runner
+        runner = AgentRunner(
+            worker_id=worker_id,
+            queue=queue,
+            event_bus=event_bus,
+            trace_sink=trace_sink,
+        )
+
+        logger.info(f"Worker {worker_id} started")
+
+        # Semaphore for concurrency control
+        semaphore = asyncio.Semaphore(concurrency)
+
+        # Shutdown event
+        shutdown_event = asyncio.Event()
+
+        # Handle signals
+        loop = asyncio.get_event_loop()
+
+        def handle_shutdown():
+            logger.info(f"Worker {worker_id} shutting down...")
+            shutdown_event.set()
+
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            try:
+                loop.add_signal_handler(sig, handle_shutdown)
+            except NotImplementedError:
+                # Windows doesn't support add_signal_handler
+                pass
+
+        # Background task for lease recovery
+        recovery_task = asyncio.create_task(
+            self._lease_recovery_loop(queue, shutdown_event)
+        )
+
+        # Main processing loop
+        active_tasks: set[asyncio.Task] = set()
+
+        try:
+            while not shutdown_event.is_set():
+                # Wait for semaphore slot
+                await semaphore.acquire()
+
+                if shutdown_event.is_set():
+                    semaphore.release()
+                    break
+
+                # Try to claim a run
+                runs = await queue.claim(
+                    worker_id=worker_id,
+                    agent_keys=agent_keys,
+                    batch_size=1,
+                )
+
+                if not runs:
+                    semaphore.release()
+                    # No work available, wait a bit
+                    try:
+                        await asyncio.wait_for(
+                            shutdown_event.wait(),
+                            timeout=1.0,
+                        )
+                    except asyncio.TimeoutError:
+                        pass
+                    continue
+
+                # Process the run
+                run = runs[0]
+
+                async def process_run(r):
+                    try:
+                        await runner.run_once(r)
+                    finally:
+                        semaphore.release()
+
+                task = asyncio.create_task(process_run(run))
+                active_tasks.add(task)
+                task.add_done_callback(active_tasks.discard)
+
+        finally:
+            # Wait for active tasks to complete
+            if active_tasks:
+                logger.info(f"Waiting for {len(active_tasks)} active tasks...")
+                await asyncio.gather(*active_tasks, return_exceptions=True)
+
+            # Cancel recovery task
+            recovery_task.cancel()
+            try:
+                await recovery_task
+            except asyncio.CancelledError:
+                pass
+
+            # Cleanup
+            await queue.close()
+            await event_bus.close()
+
+            logger.info(f"Worker {worker_id} stopped")
+
+    async def _lease_recovery_loop(self, queue, shutdown_event: asyncio.Event):
+        """Periodically recover expired leases."""
+        while not shutdown_event.is_set():
+            try:
+                await asyncio.wait_for(
+                    shutdown_event.wait(),
+                    timeout=60.0,  # Check every minute
+                )
+            except asyncio.TimeoutError:
+                pass
+
+            if shutdown_event.is_set():
+                break
+
+            try:
+                recovered = await queue.recover_expired_leases()
+                if recovered:
+                    logger.info(f"Recovered {recovered} expired leases")
+            except Exception as e:
+                logger.error(f"Error recovering leases: {e}")
