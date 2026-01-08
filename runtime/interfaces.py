@@ -111,6 +111,11 @@ class RunContext(Protocol):
         ...
 
     @property
+    def metadata(self) -> dict:
+        """Metadata associated with this run (e.g., channel_id, user context)."""
+        ...
+
+    @property
     def tool_registry(self) -> "ToolRegistry":
         """Registry of available tools for this agent."""
         ...

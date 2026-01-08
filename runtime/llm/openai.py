@@ -13,9 +13,15 @@ from django_agent_runtime.runtime.interfaces import (
 )
 
 try:
-    from openai import AsyncOpenAI
+    from openai import AsyncOpenAI, OpenAIError
 except ImportError:
     AsyncOpenAI = None
+    OpenAIError = None
+
+
+class OpenAIConfigurationError(Exception):
+    """Raised when OpenAI API key is not configured."""
+    pass
 
 
 class OpenAIClient(LLMClient):
@@ -34,15 +40,67 @@ class OpenAIClient(LLMClient):
         **kwargs,
     ):
         if AsyncOpenAI is None:
-            raise ImportError("openai package is required for OpenAIClient")
+            raise ImportError(
+                "openai package is required for OpenAIClient. "
+                "Install it with: pip install openai"
+            )
 
         self.default_model = default_model
-        self._client = AsyncOpenAI(
-            api_key=api_key or os.environ.get("OPENAI_API_KEY"),
-            organization=organization,
-            base_url=base_url,
-            **kwargs,
-        )
+        
+        # Resolve API key with clear priority
+        resolved_api_key = self._resolve_api_key(api_key)
+        
+        try:
+            self._client = AsyncOpenAI(
+                api_key=resolved_api_key,
+                organization=organization,
+                base_url=base_url,
+                **kwargs,
+            )
+        except OpenAIError as e:
+            if "api_key" in str(e).lower():
+                raise OpenAIConfigurationError(
+                    "OpenAI API key is not configured.\n\n"
+                    "Configure it using one of these methods:\n"
+                    "  1. Set OPENAI_API_KEY in your DJANGO_AGENT_RUNTIME settings:\n"
+                    "     DJANGO_AGENT_RUNTIME = {\n"
+                    "         'OPENAI_API_KEY': 'sk-...',\n"
+                    "         ...\n"
+                    "     }\n\n"
+                    "  2. Set the OPENAI_API_KEY environment variable:\n"
+                    "     export OPENAI_API_KEY='sk-...'\n\n"
+                    "  3. Pass api_key directly to get_llm_client():\n"
+                    "     llm = get_llm_client(api_key='sk-...')"
+                ) from e
+            raise
+
+    def _resolve_api_key(self, explicit_key: Optional[str]) -> Optional[str]:
+        """
+        Resolve API key with clear priority order.
+        
+        Priority:
+        1. Explicit api_key parameter passed to __init__
+        2. OPENAI_API_KEY in DJANGO_AGENT_RUNTIME settings
+        3. OPENAI_API_KEY environment variable
+        
+        Returns:
+            Resolved API key or None (let OpenAI client raise its own error)
+        """
+        if explicit_key:
+            return explicit_key
+        
+        # Try Django settings
+        try:
+            from django_agent_runtime.conf import runtime_settings
+            settings = runtime_settings()
+            settings_key = settings.get_openai_api_key()
+            if settings_key:
+                return settings_key
+        except Exception:
+            pass
+        
+        # Fall back to environment variable (OpenAI client will also check this)
+        return os.environ.get("OPENAI_API_KEY")
 
     async def generate(
         self,
@@ -170,4 +228,3 @@ class OpenAIClient(LLMClient):
             ]
 
         return result
-

@@ -12,57 +12,93 @@ from django_agent_runtime.runtime.interfaces import (
     ToolDefinition,
     EventType,
 )
+from django_agent_runtime.runtime.runner import RunContextImpl
 
 
 class TestRunContext:
-    """Tests for RunContext."""
-    
-    def test_run_context_creation(self):
-        """Test creating a RunContext."""
-        ctx = RunContext(
+    """Tests for RunContext (via RunContextImpl)."""
+
+    @pytest.mark.asyncio
+    async def test_run_context_creation(self):
+        """Test creating a RunContextImpl."""
+        from unittest.mock import AsyncMock
+
+        mock_event_bus = AsyncMock()
+        mock_queue = AsyncMock()
+
+        ctx = RunContextImpl(
             run_id=uuid4(),
-            agent_key="test-agent",
+            conversation_id=None,
             input_messages=[{"role": "user", "content": "Hello"}],
             params={"temperature": 0.7},
+            metadata={},
+            tool_registry=ToolRegistry(),
+            _event_bus=mock_event_bus,
+            _queue=mock_queue,
+            _worker_id="test-worker",
         )
-        
-        assert ctx.agent_key == "test-agent"
+
         assert len(ctx.input_messages) == 1
         assert ctx.params["temperature"] == 0.7
-    
-    def test_run_context_cancellation(self):
+
+    @pytest.mark.asyncio
+    async def test_run_context_cancellation(self):
         """Test cancellation checking."""
-        ctx = RunContext(
+        from unittest.mock import AsyncMock
+
+        mock_event_bus = AsyncMock()
+        mock_queue = AsyncMock()
+        mock_queue.is_cancelled = AsyncMock(return_value=False)
+
+        ctx = RunContextImpl(
             run_id=uuid4(),
-            agent_key="test-agent",
+            conversation_id=None,
             input_messages=[],
+            params={},
+            metadata={},
+            tool_registry=ToolRegistry(),
+            _event_bus=mock_event_bus,
+            _queue=mock_queue,
+            _worker_id="test-worker",
         )
-        
+
         assert not ctx.cancelled()
-        
-        ctx._cancel_flag.set()
+
+        ctx._is_cancelled = True
         assert ctx.cancelled()
-    
-    def test_run_context_tool_registry(self):
+
+    @pytest.mark.asyncio
+    async def test_run_context_tool_registry(self):
         """Test tool registry access."""
-        ctx = RunContext(
+        from unittest.mock import AsyncMock
+
+        mock_event_bus = AsyncMock()
+        mock_queue = AsyncMock()
+
+        ctx = RunContextImpl(
             run_id=uuid4(),
-            agent_key="test-agent",
+            conversation_id=None,
             input_messages=[],
+            params={},
+            metadata={},
+            tool_registry=ToolRegistry(),
+            _event_bus=mock_event_bus,
+            _queue=mock_queue,
+            _worker_id="test-worker",
         )
-        
+
         assert ctx.tool_registry is not None
         assert isinstance(ctx.tool_registry, ToolRegistry)
 
 
 class TestRunResult:
     """Tests for RunResult."""
-    
+
     def test_run_result_defaults(self):
         """Test RunResult default values."""
         result = RunResult()
-        
-        assert result.final_output is None
+
+        assert result.final_output == {}
         assert result.final_messages == []
         assert result.usage == {}
     
@@ -133,8 +169,8 @@ class TestToolRegistry:
     
     def test_list_tools(self, tool_registry):
         """Test listing all tools."""
-        tools = tool_registry.list()
-        
+        tools = tool_registry.list_tools()
+
         assert len(tools) == 2
         names = [t.name for t in tools]
         assert "add_numbers" in names

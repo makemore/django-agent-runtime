@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "django-agent-runtime"
-version = "0.1.0"
+version = "0.2.0"
 description = "Production-grade AI agent runtime for Django - framework and model agnostic"
 readme = "README.md"
 license = {text = "MIT"}
@@ -32,6 +32,7 @@ keywords = ["django", "ai", "agent", "llm", "runtime", "async"]
 dependencies = [
     "Django>=4.2",
     "djangorestframework>=3.14",
+    "agent-runtime-core>=0.1.0",
 ]
 
 [project.optional-dependencies]
@@ -73,9 +74,9 @@ Issues = "https://github.com/yourorg/django-agent-runtime/issues"
 # Example: plugins can register here
 # my_runtime = "my_plugin.runtime:register"
 
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["django_agent_runtime*"]
+[tool.setuptools]
+packages = ["django_agent_runtime", "django_agent_runtime.api", "django_agent_runtime.models", "django_agent_runtime.runtime", "django_agent_runtime.runtime.events", "django_agent_runtime.runtime.llm", "django_agent_runtime.runtime.queue", "django_agent_runtime.runtime.tracing", "django_agent_runtime.management", "django_agent_runtime.management.commands", "django_agent_runtime.migrations", "django_agent_runtime.examples"]
+package-dir = {"django_agent_runtime" = "."}
 
 [tool.black]
 line-length = 100
@@ -96,8 +97,9 @@ warn_unused_configs = true
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
-DJANGO_SETTINGS_MODULE = "best.settings.dev"
+DJANGO_SETTINGS_MODULE = "tests.settings"
 python_files = ["test_*.py", "*_test.py"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
+pythonpath = ["."]
 

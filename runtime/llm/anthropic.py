@@ -13,9 +13,15 @@ from django_agent_runtime.runtime.interfaces import (
 )
 
 try:
-    from anthropic import AsyncAnthropic
+    from anthropic import AsyncAnthropic, APIError
 except ImportError:
     AsyncAnthropic = None
+    APIError = None
+
+
+class AnthropicConfigurationError(Exception):
+    """Raised when Anthropic API key is not configured."""
+    pass
 
 
 class AnthropicClient(LLMClient):
@@ -32,13 +38,64 @@ class AnthropicClient(LLMClient):
         **kwargs,
     ):
         if AsyncAnthropic is None:
-            raise ImportError("anthropic package is required for AnthropicClient")
+            raise ImportError(
+                "anthropic package is required for AnthropicClient. "
+                "Install it with: pip install anthropic"
+            )
 
         self.default_model = default_model
+        
+        # Resolve API key with clear priority
+        resolved_api_key = self._resolve_api_key(api_key)
+        
+        if not resolved_api_key:
+            raise AnthropicConfigurationError(
+                "Anthropic API key is not configured.\n\n"
+                "Configure it using one of these methods:\n"
+                "  1. Set ANTHROPIC_API_KEY in your DJANGO_AGENT_RUNTIME settings:\n"
+                "     DJANGO_AGENT_RUNTIME = {\n"
+                "         'MODEL_PROVIDER': 'anthropic',\n"
+                "         'ANTHROPIC_API_KEY': 'sk-ant-...',\n"
+                "         ...\n"
+                "     }\n\n"
+                "  2. Set the ANTHROPIC_API_KEY environment variable:\n"
+                "     export ANTHROPIC_API_KEY='sk-ant-...'\n\n"
+                "  3. Pass api_key directly to get_llm_client():\n"
+                "     llm = get_llm_client(api_key='sk-ant-...')"
+            )
+        
         self._client = AsyncAnthropic(
-            api_key=api_key or os.environ.get("ANTHROPIC_API_KEY"),
+            api_key=resolved_api_key,
             **kwargs,
         )
+
+    def _resolve_api_key(self, explicit_key: Optional[str]) -> Optional[str]:
+        """
+        Resolve API key with clear priority order.
+        
+        Priority:
+        1. Explicit api_key parameter passed to __init__
+        2. ANTHROPIC_API_KEY in DJANGO_AGENT_RUNTIME settings
+        3. ANTHROPIC_API_KEY environment variable
+        
+        Returns:
+            Resolved API key or None
+        """
+        if explicit_key:
+            return explicit_key
+        
+        # Try Django settings
+        try:
+            from django_agent_runtime.conf import runtime_settings
+            settings = runtime_settings()
+            settings_key = settings.get_anthropic_api_key()
+            if settings_key:
+                return settings_key
+        except Exception:
+            pass
+        
+        # Fall back to environment variable
+        return os.environ.get("ANTHROPIC_API_KEY")
 
     async def generate(
         self,
@@ -75,6 +132,7 @@ class AnthropicClient(LLMClient):
         if tools:
             request_kwargs["tools"] = self._convert_tools(tools)
         if temperature is not None:
+
             request_kwargs["temperature"] = temperature
 
         request_kwargs.update(kwargs)
@@ -189,4 +247,3 @@ class AnthropicClient(LLMClient):
             result["tool_calls"] = tool_calls
 
         return result
-

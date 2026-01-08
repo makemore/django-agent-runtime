@@ -20,17 +20,30 @@ class AgentConversation(AbstractAgentConversation):
     Default concrete implementation of AgentConversation.
 
     Groups related agent runs into a conversation.
-    Supports both authenticated users and anonymous sessions.
-    """
 
-    # Optional anonymous session association
-    anonymous_session = models.ForeignKey(
-        "accounts.AnonymousSession",
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="agent_conversations",
-    )
+    For anonymous session support, create your own model::
+
+        from django.db import models
+        from django_agent_runtime.models.base import AbstractAgentConversation
+
+        class MyAgentConversation(AbstractAgentConversation):
+            anonymous_session = models.ForeignKey(
+                "myapp.MySession",
+                on_delete=models.SET_NULL,
+                null=True,
+                blank=True,
+                related_name="agent_conversations",
+            )
+
+            class Meta(AbstractAgentConversation.Meta):
+                abstract = False
+
+    Then configure in settings::
+
+        DJANGO_AGENT_RUNTIME = {
+            'CONVERSATION_MODEL': 'myapp.MyAgentConversation',
+        }
+    """
 
     class Meta(AbstractAgentConversation.Meta):
         abstract = False

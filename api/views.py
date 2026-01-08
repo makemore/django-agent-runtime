@@ -15,6 +15,13 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.authentication import TokenAuthentication, SessionAuthentication
 
+# Try to import JWT authentication (optional dependency)
+try:
+    from rest_framework_simplejwt.authentication import JWTAuthentication
+    HAS_JWT = True
+except ImportError:
+    HAS_JWT = False
+
 from django_agent_runtime.models import AgentRun, AgentConversation, AgentEvent
 from django_agent_runtime.models.base import RunStatus
 from django_agent_runtime.api.serializers import (
@@ -32,6 +39,12 @@ from django_agent_runtime.api.permissions import (
 from django_agent_runtime.conf import runtime_settings, get_hook
 
 
+# Build authentication classes list dynamically
+_AUTH_CLASSES = [TokenAuthentication, SessionAuthentication, AnonymousSessionAuthentication]
+if HAS_JWT:
+    _AUTH_CLASSES.insert(0, JWTAuthentication)
+
+
 class AgentConversationViewSet(viewsets.ModelViewSet):
     """
     ViewSet for managing agent conversations.
@@ -40,7 +53,7 @@ class AgentConversationViewSet(viewsets.ModelViewSet):
     """
 
     serializer_class = AgentConversationSerializer
-    authentication_classes = [TokenAuthentication, SessionAuthentication, AnonymousSessionAuthentication]
+    authentication_classes = _AUTH_CLASSES
     permission_classes = [IsAuthenticatedOrAnonymousSession]
 
     def get_queryset(self):
@@ -78,7 +91,7 @@ class AgentRunViewSet(viewsets.ModelViewSet):
     Supports both authenticated users and anonymous sessions.
     """
 
-    authentication_classes = [TokenAuthentication, SessionAuthentication, AnonymousSessionAuthentication]
+    authentication_classes = _AUTH_CLASSES
     permission_classes = [IsAuthenticatedOrAnonymousSession]
 
     def get_serializer_class(self):
@@ -90,16 +103,22 @@ class AgentRunViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         """Filter runs by user's conversations or anonymous session."""
+        from django.db.models import Q
+
         if self.request.user and self.request.user.is_authenticated:
+            # Include runs with user's conversations OR runs without conversation
+            # that were created by this user (stored in metadata)
             return AgentRun.objects.filter(
-                conversation__user=self.request.user
+                Q(conversation__user=self.request.user) |
+                Q(conversation__isnull=True, metadata__user_id=self.request.user.id)
             ).select_related("conversation")
 
         # For anonymous sessions
         session = get_anonymous_session(self.request)
         if session:
             return AgentRun.objects.filter(
-                conversation__anonymous_session=session
+                Q(conversation__anonymous_session=session) |
+                Q(conversation__isnull=True, metadata__anonymous_token=session.token)
             ).select_related("conversation")
 
         return AgentRun.objects.none()
@@ -163,11 +182,13 @@ class AgentRunViewSet(viewsets.ModelViewSet):
                     status=status.HTTP_200_OK,
                 )
 
-        # Build metadata with session info
+        # Build metadata with session/user info
         metadata = {
             **data.get("metadata", {}),
             "conversation_id": str(conversation.id) if conversation else None,
         }
+        if request.user and request.user.is_authenticated:
+            metadata["user_id"] = request.user.id
         if session:
             metadata["anonymous_token"] = session.token
 
@@ -282,7 +303,7 @@ def sync_event_stream(request, run_id: str):
     Sync SSE endpoint for streaming events.
 
     This is a plain Django view (not DRF) to avoid content negotiation issues.
-    Supports both authenticated users and anonymous sessions.
+    Supports both authenticated users, JWT tokens, and anonymous sessions.
     """
     import time
     from django.http import JsonResponse
@@ -294,8 +315,9 @@ def sync_event_stream(request, run_id: str):
 
     from_seq = int(request.GET.get("from_seq", 0))
 
-    # Check authorization - support both auth methods
+    # Check authorization - support multiple auth methods
     anonymous_token = request.headers.get('X-Anonymous-Token') or request.GET.get('anonymous_token')
+    jwt_token = request.GET.get('token')  # JWT token passed as query param for SSE
 
     try:
         run = AgentRun.objects.select_related("conversation").get(id=run_uuid)
@@ -304,22 +326,46 @@ def sync_event_stream(request, run_id: str):
 
     # Check access
     has_access = False
+    authenticated_user = None
+
+    # First check if user is already authenticated via session
     if request.user and request.user.is_authenticated:
-        if run.conversation and run.conversation.user == request.user:
+        authenticated_user = request.user
+    # Try JWT token authentication
+    elif jwt_token and HAS_JWT:
+        try:
+            from rest_framework_simplejwt.tokens import AccessToken
+            from django.contrib.auth import get_user_model
+            User = get_user_model()
+
+            token = AccessToken(jwt_token)
+            user_id = token.get('user_id')
+            if user_id:
+                authenticated_user = User.objects.get(id=user_id)
+        except Exception:
+            pass
+
+    # Check access based on authenticated user
+    if authenticated_user:
+        if run.conversation and run.conversation.user == authenticated_user:
             has_access = True
         elif not run.conversation:
             has_access = True
+    # Check anonymous token
     elif anonymous_token:
         try:
-            from accounts.models import AnonymousSession
-            session = AnonymousSession.objects.get(token=anonymous_token)
-            if not session.is_expired:
-                if run.conversation and run.conversation.anonymous_session == session:
-                    has_access = True
-                elif not run.conversation:
-                    # Run without conversation - check metadata
-                    if run.metadata.get("anonymous_token") == anonymous_token:
+            from django_agent_runtime.api.permissions import _get_anonymous_session_model
+            AnonymousSession = _get_anonymous_session_model()
+            if AnonymousSession:
+                session = AnonymousSession.objects.get(token=anonymous_token)
+                is_expired = getattr(session, 'is_expired', False)
+                if not is_expired:
+                    if run.conversation and run.conversation.anonymous_session == session:
                         has_access = True
+                    elif not run.conversation:
+                        # Run without conversation - check metadata
+                        if run.metadata.get("anonymous_token") == anonymous_token:
+                            has_access = True
         except Exception:
             pass
 

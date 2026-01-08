@@ -5,6 +5,7 @@ All settings are namespaced under DJANGO_AGENT_RUNTIME in Django settings.
 This module provides defaults and validation.
 """
 
+import os
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
@@ -52,6 +53,11 @@ class AgentRuntimeSettings:
     MODEL_PROVIDER: str = "openai"  # "openai" | "anthropic" | "litellm" | ...
     LITELLM_ENABLED: bool = False
     DEFAULT_MODEL: str = "gpt-4o"
+    
+    # API Keys - can be set here or via environment variables
+    # Priority: 1) Explicit setting here, 2) Environment variable
+    OPENAI_API_KEY: Optional[str] = None
+    ANTHROPIC_API_KEY: Optional[str] = None
 
     # Tracing/observability
     LANGFUSE_ENABLED: bool = False
@@ -66,9 +72,18 @@ class AgentRuntimeSettings:
     AUTHZ_HOOK: Optional[str] = None  # (user, action, run) -> bool
     QUOTA_HOOK: Optional[str] = None  # (user, agent_key) -> bool
 
+    # Completion callback hook (dotted path to callable)
+    # Called when a run completes successfully: (run_id: str, output: dict) -> None
+    RUN_COMPLETED_HOOK: Optional[str] = None
+
     # Model customization (for swappable models pattern)
     RUN_MODEL: Optional[str] = None  # e.g., "myapp.MyAgentRun"
     CONVERSATION_MODEL: Optional[str] = None
+
+    # Anonymous session model (optional)
+    # Set to your model path, e.g., "accounts.AnonymousSession"
+    # Model must have: token field, is_expired property
+    ANONYMOUS_SESSION_MODEL: Optional[str] = None
 
     def __post_init__(self):
         """Validate settings after initialization."""
@@ -89,6 +104,36 @@ class AgentRuntimeSettings:
 
         if self.EVENT_BUS_BACKEND == "redis" and not self.REDIS_URL:
             raise ValueError("REDIS_URL is required when using redis event bus backend")
+    
+    def get_openai_api_key(self) -> Optional[str]:
+        """
+        Get OpenAI API key with fallback to environment variable.
+        
+        Priority:
+        1. OPENAI_API_KEY in DJANGO_AGENT_RUNTIME settings
+        2. OPENAI_API_KEY environment variable
+        
+        Returns:
+            API key string or None if not configured.
+        """
+        if self.OPENAI_API_KEY:
+            return self.OPENAI_API_KEY
+        return os.environ.get("OPENAI_API_KEY")
+    
+    def get_anthropic_api_key(self) -> Optional[str]:
+        """
+        Get Anthropic API key with fallback to environment variable.
+        
+        Priority:
+        1. ANTHROPIC_API_KEY in DJANGO_AGENT_RUNTIME settings
+        2. ANTHROPIC_API_KEY environment variable
+        
+        Returns:
+            API key string or None if not configured.
+        """
+        if self.ANTHROPIC_API_KEY:
+            return self.ANTHROPIC_API_KEY
+        return os.environ.get("ANTHROPIC_API_KEY")
 
 
 def get_settings() -> AgentRuntimeSettings:
@@ -138,4 +183,3 @@ def reset_settings():
     """Reset cached settings (useful for testing)."""
     global _settings_instance
     _settings_instance = None
-

@@ -57,11 +57,11 @@ class TestOpenAIClient:
     @pytest.mark.asyncio
     async def test_generate_with_model(self, mock_openai):
         """Test generating with specific model."""
-        client = OpenAIClient(api_key="test-key", model="gpt-4")
-        
+        client = OpenAIClient(api_key="test-key", default_model="gpt-4")
+
         messages = [{"role": "user", "content": "Hello"}]
         await client.generate(messages)
-        
+
         # Verify model was passed
         call_kwargs = mock_openai.chat.completions.create.call_args.kwargs
         assert call_kwargs["model"] == "gpt-4"
@@ -124,10 +124,19 @@ class TestOpenAIClient:
         assert response.message["tool_calls"][0]["function"]["name"] == "calculate"
 
 
+# Check if openai package is available
+try:
+    import openai
+    HAS_OPENAI = True
+except ImportError:
+    HAS_OPENAI = False
+
+
+@pytest.mark.skipif(not HAS_OPENAI, reason="OpenAI package not installed")
 class TestGetLLMClient:
     """Tests for get_llm_client factory function."""
-    
-    @patch("django_agent_runtime.runtime.llm.runtime_settings")
+
+    @patch("django_agent_runtime.conf.runtime_settings")
     def test_get_openai_client(self, mock_settings):
         """Test getting OpenAI client."""
         mock_settings.return_value = MagicMock(
@@ -135,13 +144,13 @@ class TestGetLLMClient:
             DEFAULT_MODEL="gpt-4o",
             LITELLM_ENABLED=False,
         )
-        
+
         with patch.dict("os.environ", {"OPENAI_API_KEY": "test-key"}):
             client = get_llm_client()
-        
+
         assert isinstance(client, OpenAIClient)
-    
-    @patch("django_agent_runtime.runtime.llm.runtime_settings")
+
+    @patch("django_agent_runtime.conf.runtime_settings")
     def test_get_client_with_custom_model(self, mock_settings):
         """Test getting client with custom model."""
         mock_settings.return_value = MagicMock(
@@ -149,11 +158,11 @@ class TestGetLLMClient:
             DEFAULT_MODEL="gpt-4o",
             LITELLM_ENABLED=False,
         )
-        
+
         with patch.dict("os.environ", {"OPENAI_API_KEY": "test-key"}):
-            client = get_llm_client(model="gpt-4-turbo")
-        
-        assert client.model == "gpt-4-turbo"
+            client = get_llm_client(default_model="gpt-4-turbo")
+
+        assert client.default_model == "gpt-4-turbo"
 
 
 class TestMockLLMClient:

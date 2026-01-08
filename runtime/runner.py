@@ -47,6 +47,7 @@ class RunContextImpl:
     conversation_id: Optional[UUID]
     input_messages: list[Message]
     params: dict
+    metadata: dict
     tool_registry: ToolRegistry
 
     # Internal state
@@ -268,6 +269,7 @@ class AgentRunner:
             conversation_id=conversation_id,
             input_messages=messages,
             params=params,
+            metadata=queued_run.metadata,
             tool_registry=tool_registry,
             _event_bus=self.event_bus,
             _queue=self.queue,
@@ -303,6 +305,13 @@ class AgentRunner:
         """Handle successful run completion."""
         logger.info(f"Run {run_id} succeeded")
 
+        output = {
+            "final_output": result.final_output,
+            "final_messages": result.final_messages,
+            "usage": result.usage,
+            "artifacts": result.artifacts,
+        }
+
         # Emit success event
         await ctx.emit(EventType.RUN_SUCCEEDED, {
             "output": result.final_output,
@@ -314,13 +323,26 @@ class AgentRunner:
             run_id,
             self.worker_id,
             success=True,
-            output={
-                "final_output": result.final_output,
-                "final_messages": result.final_messages,
-                "usage": result.usage,
-                "artifacts": result.artifacts,
-            },
+            output=output,
         )
+
+        # Call completion hook if configured
+        await self._call_completion_hook(run_id, output)
+
+    async def _call_completion_hook(self, run_id: UUID, output: dict) -> None:
+        """Call the configured completion hook if any."""
+        from django_agent_runtime.conf import get_hook
+
+        hook = get_hook(self.settings.RUN_COMPLETED_HOOK)
+        if not hook:
+            return
+
+        try:
+            # Run hook in thread pool since it may do sync I/O
+            from asgiref.sync import sync_to_async
+            await sync_to_async(hook)(str(run_id), output)
+        except Exception as e:
+            logger.exception(f"Error in completion hook for run {run_id}: {e}")
 
     async def _handle_timeout(self, run_id: UUID, ctx: RunContextImpl) -> None:
         """Handle run timeout."""
