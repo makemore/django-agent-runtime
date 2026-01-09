@@ -246,7 +246,8 @@ class AgentRunViewSet(viewsets.ModelViewSet):
                     "payload": event.payload,
                     "ts": event.timestamp.isoformat(),
                 }
-                yield f"data: {json.dumps(data)}\n\n"
+                # Use named events so browsers can use addEventListener
+                yield f"event: {event.event_type}\ndata: {json.dumps(data)}\n\n"
                 current_seq = event.seq + 1
 
                 # Check for terminal events
@@ -371,7 +372,8 @@ def sync_event_stream(request, run_id: str):
                     "payload": event.payload,
                     "ts": event.timestamp.isoformat(),
                 }
-                yield f"data: {json.dumps(data)}\n\n"
+                # Use named events so browsers can use addEventListener
+                yield f"event: {event.event_type}\ndata: {json.dumps(data)}\n\n"
                 current_seq = event.seq + 1
 
                 # Check for terminal events
@@ -455,7 +457,9 @@ async def async_event_stream(request, run_id: str):
         try:
             async for event in event_bus.subscribe(run_uuid, from_seq=from_seq):
                 data = event.to_dict()
-                yield f"data: {json.dumps(data)}\n\n"
+                event_type = data.get("type", "message")
+                # Use named events so browsers can use addEventListener
+                yield f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
 
                 # Check for terminal events
                 if event.event_type in (
