@@ -142,3 +142,4 @@ Thumbs.db
 
 # Lock files (optional - some prefer to commit these)
 uv.lock
+.pypirc

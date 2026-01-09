@@ -263,6 +263,10 @@ class ToolRegistry:
             for tool in self._tools.values()
         ]
 
+    def get_tool_definitions(self) -> list[dict]:
+        """Alias for to_openai_format() for backwards compatibility."""
+        return self.to_openai_format()
+
     async def execute(self, name: str, arguments: dict) -> Any:
         """
         Execute a tool by name.
@@ -347,6 +351,51 @@ class LLMResponse:
     model: str = ""
     finish_reason: str = ""
     raw_response: Optional[Any] = None
+
+    @property
+    def tool_calls(self) -> Optional[list]:
+        """Extract tool_calls from the message for convenience."""
+        if isinstance(self.message, dict):
+            calls = self.message.get("tool_calls")
+            if calls:
+                # Convert to objects with name, arguments, id attributes
+                return [ToolCall(tc) for tc in calls]
+        return None
+
+    @property
+    def content(self) -> str:
+        """Extract content from the message for convenience."""
+        if isinstance(self.message, dict):
+            return self.message.get("content", "")
+        return ""
+
+
+class ToolCall:
+    """Wrapper for tool call data to provide attribute access."""
+    
+    def __init__(self, data: dict):
+        self._data = data
+    
+    @property
+    def id(self) -> str:
+        return self._data.get("id", "")
+    
+    @property
+    def name(self) -> str:
+        func = self._data.get("function", {})
+        return func.get("name", "")
+    
+    @property
+    def arguments(self) -> dict:
+        func = self._data.get("function", {})
+        args = func.get("arguments", "{}")
+        if isinstance(args, str):
+            import json
+            try:
+                return json.loads(args)
+            except json.JSONDecodeError:
+                return {}
+        return args
 
 
 @dataclass
