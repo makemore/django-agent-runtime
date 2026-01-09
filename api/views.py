@@ -1,7 +1,11 @@
 """
 API views for agent runtime.
 
-Supports both authenticated users and anonymous sessions via X-Anonymous-Token header.
+Authentication and permissions are controlled by the outer Django project's
+REST_FRAMEWORK settings (DEFAULT_AUTHENTICATION_CLASSES, DEFAULT_PERMISSION_CLASSES).
+
+The library provides optional helpers in permissions.py for anonymous session support,
+but does not enforce any particular auth scheme.
 """
 
 import asyncio
@@ -12,15 +16,6 @@ from django.http import StreamingHttpResponse
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated
-from rest_framework.authentication import TokenAuthentication, SessionAuthentication
-
-# Try to import JWT authentication (optional dependency)
-try:
-    from rest_framework_simplejwt.authentication import JWTAuthentication
-    HAS_JWT = True
-except ImportError:
-    HAS_JWT = False
 
 from django_agent_runtime.models import AgentRun, AgentConversation, AgentEvent
 from django_agent_runtime.models.base import RunStatus
@@ -31,30 +26,18 @@ from django_agent_runtime.api.serializers import (
     AgentConversationSerializer,
     AgentEventSerializer,
 )
-from django_agent_runtime.api.permissions import (
-    AnonymousSessionAuthentication,
-    IsAuthenticatedOrAnonymousSession,
-    get_anonymous_session,
-)
+from django_agent_runtime.api.permissions import get_anonymous_session
 from django_agent_runtime.conf import runtime_settings, get_hook
-
-
-# Build authentication classes list dynamically
-_AUTH_CLASSES = [TokenAuthentication, SessionAuthentication, AnonymousSessionAuthentication]
-if HAS_JWT:
-    _AUTH_CLASSES.insert(0, JWTAuthentication)
 
 
 class AgentConversationViewSet(viewsets.ModelViewSet):
     """
     ViewSet for managing agent conversations.
 
-    Supports both authenticated users and anonymous sessions.
+    Authentication and permissions are inherited from DRF's DEFAULT_* settings.
     """
 
     serializer_class = AgentConversationSerializer
-    authentication_classes = _AUTH_CLASSES
-    permission_classes = [IsAuthenticatedOrAnonymousSession]
 
     def get_queryset(self):
         """Filter conversations by user or anonymous session."""
@@ -88,11 +71,8 @@ class AgentRunViewSet(viewsets.ModelViewSet):
     - POST /runs/{id}/cancel/ - Cancel a run
     - GET /runs/{id}/events/ - Get events (SSE)
 
-    Supports both authenticated users and anonymous sessions.
+    Authentication and permissions are inherited from DRF's DEFAULT_* settings.
     """
-
-    authentication_classes = _AUTH_CLASSES
-    permission_classes = [IsAuthenticatedOrAnonymousSession]
 
     def get_serializer_class(self):
         if self.action == "create":
@@ -131,7 +111,7 @@ class AgentRunViewSet(viewsets.ModelViewSet):
 
         data = serializer.validated_data
 
-        # Check authorization (skip for anonymous sessions)
+        # Check authorization hooks if configured
         settings = runtime_settings()
         if request.user and request.user.is_authenticated:
             authz_hook = get_hook(settings.AUTHZ_HOOK)
@@ -245,13 +225,9 @@ class AgentRunViewSet(viewsets.ModelViewSet):
     def _event_stream(self, run_id: UUID, from_seq: int):
         """Generate SSE event stream."""
         import time
-        from django_agent_runtime.runtime.events import get_event_bus
 
         settings = runtime_settings()
-
-        # Use sync event fetching for SSE (simpler than async in Django views)
         current_seq = from_seq
-        keepalive_interval = settings.SSE_KEEPALIVE_SECONDS
 
         while True:
             # Get new events from database
@@ -297,13 +273,17 @@ class AgentRunViewSet(viewsets.ModelViewSet):
             time.sleep(0.5)
 
 
-# Async SSE view for ASGI deployments
 def sync_event_stream(request, run_id: str):
     """
     Sync SSE endpoint for streaming events.
 
     This is a plain Django view (not DRF) to avoid content negotiation issues.
-    Supports both authenticated users, JWT tokens, and anonymous sessions.
+    
+    Authorization is checked by verifying the user owns the run (via conversation
+    or metadata). The outer project controls authentication via middleware.
+    
+    For token-based auth with SSE (where headers can't be set), pass the token
+    as a query parameter: ?token=<auth_token>
     """
     import time
     from django.http import JsonResponse
@@ -315,59 +295,54 @@ def sync_event_stream(request, run_id: str):
 
     from_seq = int(request.GET.get("from_seq", 0))
 
-    # Check authorization - support multiple auth methods
-    anonymous_token = request.headers.get('X-Anonymous-Token') or request.GET.get('anonymous_token')
-    jwt_token = request.GET.get('token')  # JWT token passed as query param for SSE
-
     try:
         run = AgentRun.objects.select_related("conversation").get(id=run_uuid)
     except AgentRun.DoesNotExist:
         return JsonResponse({"error": "Run not found"}, status=404)
 
-    # Check access
+    # Check access - user must own the run
     has_access = False
-    authenticated_user = None
-
-    # First check if user is already authenticated via session
-    if request.user and request.user.is_authenticated:
-        authenticated_user = request.user
-    # Try JWT token authentication
-    elif jwt_token and HAS_JWT:
+    
+    # Get authenticated user (may be set by middleware or we need to check token)
+    user = request.user if hasattr(request, 'user') else None
+    
+    # Support token auth via query param for SSE (browsers can't set headers on EventSource)
+    if (not user or not user.is_authenticated) and request.GET.get('token'):
+        from rest_framework.authtoken.models import Token
         try:
-            from rest_framework_simplejwt.tokens import AccessToken
-            from django.contrib.auth import get_user_model
-            User = get_user_model()
-
-            token = AccessToken(jwt_token)
-            user_id = token.get('user_id')
-            if user_id:
-                authenticated_user = User.objects.get(id=user_id)
-        except Exception:
+            token = Token.objects.select_related('user').get(key=request.GET.get('token'))
+            user = token.user
+        except Token.DoesNotExist:
             pass
-
-    # Check access based on authenticated user
-    if authenticated_user:
-        if run.conversation and run.conversation.user == authenticated_user:
+    
+    if user and user.is_authenticated:
+        # User owns the conversation
+        if run.conversation and run.conversation.user == user:
             has_access = True
-        elif not run.conversation:
+        # Run without conversation - check metadata
+        elif not run.conversation and run.metadata.get("user_id") == user.id:
             has_access = True
-    # Check anonymous token
-    elif anonymous_token:
-        try:
+        # Allow access to runs without ownership info (backwards compat)
+        elif not run.conversation and "user_id" not in run.metadata:
+            has_access = True
+    
+    # Check anonymous session if configured
+    if not has_access:
+        anonymous_token = request.headers.get('X-Anonymous-Token') or request.GET.get('anonymous_token')
+        if anonymous_token:
             from django_agent_runtime.api.permissions import _get_anonymous_session_model
             AnonymousSession = _get_anonymous_session_model()
             if AnonymousSession:
-                session = AnonymousSession.objects.get(token=anonymous_token)
-                is_expired = getattr(session, 'is_expired', False)
-                if not is_expired:
-                    if run.conversation and run.conversation.anonymous_session == session:
-                        has_access = True
-                    elif not run.conversation:
-                        # Run without conversation - check metadata
-                        if run.metadata.get("anonymous_token") == anonymous_token:
+                try:
+                    session = AnonymousSession.objects.get(token=anonymous_token)
+                    is_expired = getattr(session, 'is_expired', False)
+                    if not is_expired:
+                        if run.conversation and run.conversation.anonymous_session == session:
                             has_access = True
-        except Exception:
-            pass
+                        elif not run.conversation and run.metadata.get("anonymous_token") == anonymous_token:
+                            has_access = True
+                except AnonymousSession.DoesNotExist:
+                    pass
 
     if not has_access:
         return JsonResponse({"error": "Not authorized"}, status=403)
@@ -438,28 +413,38 @@ async def async_event_stream(request, run_id: str):
 
     Use this with ASGI servers (uvicorn, daphne) for better performance.
     """
-    from django.http import StreamingHttpResponse
+    from django.http import StreamingHttpResponse, JsonResponse
     from asgiref.sync import sync_to_async
 
-    run_id = UUID(run_id)
+    try:
+        run_uuid = UUID(run_id)
+    except ValueError:
+        return JsonResponse({"error": "Invalid run ID"}, status=400)
+
     from_seq = int(request.GET.get("from_seq", 0))
 
-    # Check authorization
     @sync_to_async
     def check_access():
         try:
-            run = AgentRun.objects.select_related("conversation").get(id=run_id)
-            if run.conversation and run.conversation.user != request.user:
-                return None
-            return run
+            run = AgentRun.objects.select_related("conversation").get(id=run_uuid)
         except AgentRun.DoesNotExist:
             return None
+            
+        user = request.user if hasattr(request, 'user') else None
+        
+        if user and user.is_authenticated:
+            if run.conversation and run.conversation.user == user:
+                return run
+            elif not run.conversation and run.metadata.get("user_id") == user.id:
+                return run
+            elif not run.conversation and "user_id" not in run.metadata:
+                return run
+        
+        return None
 
     run = await check_access()
     if not run:
-        from django.http import JsonResponse
-
-        return JsonResponse({"error": "Not found"}, status=404)
+        return JsonResponse({"error": "Not found or not authorized"}, status=404)
 
     async def event_generator():
         from django_agent_runtime.runtime.events import get_event_bus
@@ -468,7 +453,7 @@ async def async_event_stream(request, run_id: str):
         event_bus = get_event_bus(settings.EVENT_BUS_BACKEND)
 
         try:
-            async for event in event_bus.subscribe(run_id, from_seq=from_seq):
+            async for event in event_bus.subscribe(run_uuid, from_seq=from_seq):
                 data = event.to_dict()
                 yield f"data: {json.dumps(data)}\n\n"
 
