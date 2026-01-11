@@ -120,7 +120,10 @@ class DatabaseEventBus(EventBus):
                 max_seq=Max("seq")
             )
             max_seq = result["max_seq"]
-            return (max_seq or -1) + 1
+            # Note: can't use `max_seq or -1` because 0 is falsy!
+            if max_seq is None:
+                return 0
+            return max_seq + 1
 
         return await _get_next()
 
