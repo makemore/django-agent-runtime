@@ -1,11 +1,15 @@
 """
-API views for agent runtime.
+Base API views for agent runtime.
 
-Authentication and permissions are controlled by the outer Django project's
-REST_FRAMEWORK settings (DEFAULT_AUTHENTICATION_CLASSES, DEFAULT_PERMISSION_CLASSES).
+These are abstract base classes - inherit from them in your project
+and set your own authentication_classes and permission_classes.
 
-The library provides optional helpers in permissions.py for anonymous session support,
-but does not enforce any particular auth scheme.
+Example:
+    from django_agent_runtime.api.views import BaseAgentRunViewSet
+    from myapp.permissions import MyPermission
+
+    class AgentRunViewSet(BaseAgentRunViewSet):
+        permission_classes = [MyPermission]
 """
 
 import asyncio
@@ -30,11 +34,11 @@ from django_agent_runtime.api.permissions import get_anonymous_session
 from django_agent_runtime.conf import runtime_settings, get_hook
 
 
-class AgentConversationViewSet(viewsets.ModelViewSet):
+class BaseAgentConversationViewSet(viewsets.ModelViewSet):
     """
-    ViewSet for managing agent conversations.
+    Base ViewSet for managing agent conversations.
 
-    Authentication and permissions are inherited from DRF's DEFAULT_* settings.
+    Inherit from this and set your own permission_classes and authentication_classes.
     """
 
     serializer_class = AgentConversationSerializer
@@ -60,18 +64,17 @@ class AgentConversationViewSet(viewsets.ModelViewSet):
             serializer.save(anonymous_session=session)
 
 
-class AgentRunViewSet(viewsets.ModelViewSet):
+class BaseAgentRunViewSet(viewsets.ModelViewSet):
     """
-    ViewSet for managing agent runs.
+    Base ViewSet for managing agent runs.
+
+    Inherit from this and set your own permission_classes and authentication_classes.
 
     Endpoints:
     - POST /runs/ - Create a new run
     - GET /runs/ - List runs
     - GET /runs/{id}/ - Get run details
     - POST /runs/{id}/cancel/ - Cancel a run
-    - GET /runs/{id}/events/ - Get events (SSE)
-
-    Authentication and permissions are inherited from DRF's DEFAULT_* settings.
     """
 
     def get_serializer_class(self):
@@ -221,57 +224,6 @@ class AgentRunViewSet(viewsets.ModelViewSet):
         run.save(update_fields=["cancel_requested_at"])
 
         return Response({"status": "cancellation_requested"})
-
-    def _event_stream(self, run_id: UUID, from_seq: int):
-        """Generate SSE event stream."""
-        import time
-
-        settings = runtime_settings()
-        current_seq = from_seq
-
-        while True:
-            # Get new events from database
-            events = list(
-                AgentEvent.objects.filter(
-                    run_id=run_id,
-                    seq__gte=current_seq,
-                ).order_by("seq")
-            )
-
-            for event in events:
-                data = {
-                    "run_id": str(event.run_id),
-                    "seq": event.seq,
-                    "type": event.event_type,
-                    "payload": event.payload,
-                    "ts": event.timestamp.isoformat(),
-                }
-                # Use named events so browsers can use addEventListener
-                yield f"event: {event.event_type}\ndata: {json.dumps(data)}\n\n"
-                current_seq = event.seq + 1
-
-                # Check for terminal events
-                if event.event_type in (
-                    "run.succeeded",
-                    "run.failed",
-                    "run.cancelled",
-                    "run.timed_out",
-                ):
-                    return
-
-            # Check if run is complete
-            try:
-                run = AgentRun.objects.get(id=run_id)
-                if run.is_terminal:
-                    return
-            except AgentRun.DoesNotExist:
-                return
-
-            # Send keepalive
-            yield f": keepalive\n\n"
-
-            # Wait before polling again
-            time.sleep(0.5)
 
 
 def sync_event_stream(request, run_id: str):

@@ -72,7 +72,43 @@ DJANGO_AGENT_RUNTIME = {
 python manage.py migrate django_agent_runtime
 ```
 
-### 3. Include URLs
+### 3. Set Up API ViewSets and URLs
+
+Create your own ViewSets by inheriting from the base classes and configure authentication:
+
+```python
+# myapp/api/views.py
+from django_agent_runtime.api.views import BaseAgentRunViewSet, BaseAgentConversationViewSet
+from rest_framework.permissions import IsAuthenticated
+
+class AgentRunViewSet(BaseAgentRunViewSet):
+    permission_classes = [IsAuthenticated]
+
+class AgentConversationViewSet(BaseAgentConversationViewSet):
+    permission_classes = [IsAuthenticated]
+```
+
+Then wire up your URLs:
+
+```python
+# myapp/api/urls.py
+from django.urls import path, include
+from rest_framework.routers import DefaultRouter
+from django_agent_runtime.api.views import sync_event_stream, async_event_stream
+from .views import AgentRunViewSet, AgentConversationViewSet
+
+router = DefaultRouter()
+router.register(r"conversations", AgentConversationViewSet, basename="conversation")
+router.register(r"runs", AgentRunViewSet, basename="run")
+
+urlpatterns = [
+    path("", include(router.urls)),
+    path("runs/<str:run_id>/events/", sync_event_stream, name="run-events"),
+    path("runs/<str:run_id>/events/stream/", async_event_stream, name="run-stream"),
+]
+```
+
+Include in your main urls.py:
 
 ```python
 # urls.py
@@ -80,7 +116,7 @@ from django.urls import path, include
 
 urlpatterns = [
     ...
-    path('api/agents/', include('django_agent_runtime.urls')),
+    path('api/agents/', include('myapp.api.urls')),
 ]
 ```
 

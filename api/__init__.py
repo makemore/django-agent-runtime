@@ -1,19 +1,26 @@
 """
 API module for django_agent_runtime.
 
-Provides REST API endpoints for:
-- Creating and managing agent runs
-- Streaming events via SSE
-- Querying run status and history
+Provides base ViewSets for agent runtime API. Inherit from these
+in your project and set your own permission_classes.
+
+Example:
+    from django_agent_runtime.api.views import BaseAgentRunViewSet
+    
+    class AgentRunViewSet(BaseAgentRunViewSet):
+        permission_classes = [IsAuthenticated]
 """
 
 from django_agent_runtime.api.views import (
-    AgentRunViewSet,
-    AgentConversationViewSet,
+    BaseAgentRunViewSet,
+    BaseAgentConversationViewSet,
+    sync_event_stream,
+    async_event_stream,
 )
 
 __all__ = [
-    "AgentRunViewSet",
-    "AgentConversationViewSet",
+    "BaseAgentRunViewSet",
+    "BaseAgentConversationViewSet",
+    "sync_event_stream",
+    "async_event_stream",
 ]
-
