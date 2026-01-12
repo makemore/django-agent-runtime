@@ -10,7 +10,7 @@ readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
 authors = [
-    {name = "Chris Olstrom"}
+    {name = "Chris Barry"}
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -64,10 +64,10 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/yourorg/django-agent-runtime"
-Documentation = "https://github.com/yourorg/django-agent-runtime#readme"
-Repository = "https://github.com/yourorg/django-agent-runtime"
-Issues = "https://github.com/yourorg/django-agent-runtime/issues"
+Homepage = "https://github.com/makemore/django-agent-runtime"
+Documentation = "https://github.com/makemore/django-agent-runtime#readme"
+Repository = "https://github.com/makemore/django-agent-runtime"
+Issues = "https://github.com/makemore/django-agent-runtime/issues"
 
 [project.entry-points."django_agent_runtime.runtimes"]
 # Example: plugins can register here
