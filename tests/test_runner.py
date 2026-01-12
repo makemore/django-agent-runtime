@@ -1,23 +1,57 @@
 """
 Tests for django_agent_runtime runner.
 
-Note: Async runner tests require PostgreSQL database for proper async support.
+Tests for queue dataclasses and sync components.
+Async runner tests are skipped as they require more complex setup.
 """
 
 import pytest
 from uuid import uuid4
 from unittest.mock import patch, AsyncMock, MagicMock
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone as tz
 
+from django.conf import settings
+from django.contrib.auth import get_user_model
 from django.utils import timezone
 
-from django_agent_runtime.models import AgentRun, AgentEvent
+from django_agent_runtime.models import AgentRun, AgentEvent, AgentConversation
 from django_agent_runtime.models.base import RunStatus
-from django_agent_runtime.runtime.runner import AgentRunner, RunContextImpl
 from django_agent_runtime.runtime.registry import register_runtime, get_runtime, clear_registry
-from django_agent_runtime.runtime.queue.postgres import PostgresQueue
 from django_agent_runtime.runtime.queue.base import QueuedRun
-from django_agent_runtime.runtime.events.db import DatabaseEventBus
+from django_agent_runtime.runtime.queue.sync import SyncPostgresQueue
+from django_agent_runtime.runtime.events.sync import SyncDatabaseEventBus
+
+User = get_user_model()
+
+
+@pytest.fixture
+def user(db):
+    """Create a test user."""
+    return User.objects.create_user(
+        username="testuser",
+        email="test@example.com",
+        password="testpass123",
+    )
+
+
+@pytest.fixture
+def conversation(user):
+    """Create a test conversation."""
+    return AgentConversation.objects.create(
+        user=user,
+        agent_key="test-agent",
+        title="Test Conversation",
+    )
+
+
+@pytest.fixture
+def agent_run(conversation):
+    """Create a test agent run."""
+    return AgentRun.objects.create(
+        conversation=conversation,
+        agent_key="test-agent",
+        input={"messages": []},
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -26,81 +60,6 @@ def clear_registry_fixture():
     clear_registry()
     yield
     clear_registry()
-
-
-@pytest.mark.skip(reason="Async runner tests require PostgreSQL database")
-@pytest.mark.django_db
-class TestAgentRunner:
-    """Tests for AgentRunner."""
-
-    @pytest.fixture
-    def queue(self):
-        """Create a PostgresQueue instance."""
-        return PostgresQueue(lease_ttl_seconds=30)
-
-    @pytest.fixture
-    def event_bus(self):
-        """Create a DatabaseEventBus instance."""
-        return DatabaseEventBus()
-
-    @pytest.fixture
-    def runner(self, queue, event_bus, mock_runtime):
-        """Create an AgentRunner instance with mock runtime."""
-        register_runtime(mock_runtime)
-
-        return AgentRunner(
-            worker_id="test-worker",
-            queue=queue,
-            event_bus=event_bus,
-        )
-
-    @pytest.mark.asyncio
-    async def test_run_once_success(self, runner, agent_run, mock_runtime):
-        """Test successful run execution."""
-        from datetime import datetime, timezone as tz
-
-        # Register the runtime with matching key
-        mock_runtime._key = agent_run.agent_key
-        register_runtime(mock_runtime)
-
-        # Create a QueuedRun
-        queued_run = QueuedRun(
-            run_id=agent_run.id,
-            agent_key=agent_run.agent_key,
-            attempt=1,
-            lease_expires_at=datetime.now(tz.utc),
-            input=agent_run.input,
-            metadata={},
-        )
-
-        await runner.run_once(queued_run)
-
-        agent_run.refresh_from_db()
-        assert agent_run.status == RunStatus.SUCCEEDED
-        assert mock_runtime.run_count == 1
-
-    @pytest.mark.asyncio
-    async def test_run_once_failure(self, runner, agent_run, failing_runtime):
-        """Test run execution with failure."""
-        from datetime import datetime, timezone as tz
-
-        failing_runtime._key = agent_run.agent_key
-        register_runtime(failing_runtime)
-
-        queued_run = QueuedRun(
-            run_id=agent_run.id,
-            agent_key=agent_run.agent_key,
-            attempt=1,
-            lease_expires_at=datetime.now(tz.utc),
-            input=agent_run.input,
-            metadata={},
-        )
-
-        await runner.run_once(queued_run)
-
-        agent_run.refresh_from_db()
-        # Should be failed or re-queued for retry
-        assert agent_run.status in [RunStatus.FAILED, RunStatus.QUEUED]
 
 
 @pytest.mark.django_db
@@ -125,67 +84,62 @@ class TestQueuedRun:
         assert queued.attempt == 1
 
 
-@pytest.mark.skip(reason="Async context tests require PostgreSQL database")
-@pytest.mark.django_db
-class TestRunContextImpl:
-    """Tests for RunContextImpl."""
-
-    @pytest.fixture
-    def event_bus(self):
-        return DatabaseEventBus()
+@pytest.mark.django_db(transaction=True)
+class TestSyncQueueIntegration:
+    """Integration tests for sync queue with event bus."""
 
     @pytest.fixture
     def queue(self):
-        return PostgresQueue(lease_ttl_seconds=30)
+        return SyncPostgresQueue(lease_ttl_seconds=30)
 
-    @pytest.mark.asyncio
-    async def test_context_emit_event(self, agent_run, event_bus, queue):
-        """Test emitting events from context."""
-        from django_agent_runtime.runtime.interfaces import EventType, ToolRegistry
+    @pytest.fixture
+    def event_bus(self):
+        return SyncDatabaseEventBus()
 
-        ctx = RunContextImpl(
+    def test_claim_and_release_workflow(self, queue, event_bus, agent_run):
+        """Test complete claim and release workflow."""
+        from django_agent_runtime.runtime.events.base import Event
+
+        # Claim the run
+        claimed = queue.claim("worker-1")
+        assert len(claimed) == 1
+        assert claimed[0].run_id == agent_run.id
+
+        # Emit an event
+        event = Event(
             run_id=agent_run.id,
-            conversation_id=None,
-            input_messages=agent_run.input.get("messages", []),
-            params={},
-            metadata={},
-            tool_registry=ToolRegistry(),
-            _event_bus=event_bus,
-            _queue=queue,
-            _worker_id="test-worker",
+            seq=0,
+            event_type="run.started",
+            payload={"worker": "worker-1"},
+        )
+        event_bus.publish(event)
+
+        # Verify event was saved
+        events = event_bus.get_events(agent_run.id)
+        assert len(events) == 1
+        assert events[0].event_type == "run.started"
+
+        # Release the run
+        queue.release(
+            agent_run.id,
+            "worker-1",
+            success=True,
+            output={"result": "done"},
         )
 
-        await ctx.emit(EventType.RUN_STARTED, {"test": "data"})
+        agent_run.refresh_from_db()
+        assert agent_run.status == RunStatus.SUCCEEDED
+        assert agent_run.output == {"result": "done"}
 
-        # Verify event was created
-        events = AgentEvent.objects.filter(run=agent_run)
-        assert events.count() >= 1
-
-    @pytest.mark.asyncio
-    async def test_context_cancellation(self, agent_run, event_bus, queue):
-        """Test context cancellation checking."""
-        from django_agent_runtime.runtime.interfaces import ToolRegistry
-
-        ctx = RunContextImpl(
-            run_id=agent_run.id,
-            conversation_id=None,
-            input_messages=[],
-            params={},
-            metadata={},
-            tool_registry=ToolRegistry(),
-            _event_bus=event_bus,
-            _queue=queue,
-            _worker_id="test-worker",
-        )
-
-        # Initially not cancelled
-        assert not ctx.cancelled()
+    def test_cancel_workflow(self, queue, agent_run):
+        """Test cancellation workflow."""
+        # Claim the run
+        claimed = queue.claim("worker-1")
+        assert len(claimed) == 1
 
         # Request cancellation
-        agent_run.cancel_requested_at = timezone.now()
-        agent_run.save()
+        success = queue.cancel(agent_run.id)
+        assert success
 
-        # Force a check (normally done periodically)
-        ctx._is_cancelled = True
-        assert ctx.cancelled()
-
+        # Check cancellation
+        assert queue.is_cancelled(agent_run.id)

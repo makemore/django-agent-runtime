@@ -1,9 +1,7 @@
 """
 Tests for django_agent_runtime queue implementations.
 
-Note: These tests require async database access. They are skipped by default
-because SQLite in-memory databases don't support async operations well.
-Run with a real PostgreSQL database for full test coverage.
+Tests both sync and async queue implementations.
 """
 
 import pytest
@@ -11,198 +9,199 @@ from uuid import uuid4
 from datetime import timedelta
 from unittest.mock import patch, AsyncMock, MagicMock
 
+from django.conf import settings
+from django.contrib.auth import get_user_model
 from django.utils import timezone
 
-from django_agent_runtime.models import AgentRun
+from django_agent_runtime.models import AgentRun, AgentConversation
 from django_agent_runtime.models.base import RunStatus
-from django_agent_runtime.runtime.queue.postgres import PostgresQueue
+from django_agent_runtime.runtime.queue.sync import SyncPostgresQueue
+
+User = get_user_model()
 
 
-# Skip all async queue tests when using SQLite (no async support)
-pytestmark = pytest.mark.skip(reason="Async queue tests require PostgreSQL database")
+@pytest.fixture
+def user(db):
+    """Create a test user."""
+    return User.objects.create_user(
+        username="testuser",
+        email="test@example.com",
+        password="testpass123",
+    )
 
 
-@pytest.mark.django_db
-class TestPostgresQueue:
-    """Tests for PostgresQueue."""
-    
+@pytest.fixture
+def conversation(user):
+    """Create a test conversation."""
+    return AgentConversation.objects.create(
+        user=user,
+        agent_key="test-agent",
+        title="Test Conversation",
+    )
+
+
+@pytest.mark.django_db(transaction=True)
+class TestSyncPostgresQueue:
+    """Tests for SyncPostgresQueue."""
+
     @pytest.fixture
     def queue(self):
-        """Create a PostgresQueue instance."""
-        return PostgresQueue(lease_ttl_seconds=30)
-    
-    @pytest.mark.asyncio
-    async def test_enqueue(self, queue, conversation):
-        """Test enqueueing a run."""
-        run = AgentRun.objects.create(
-            conversation=conversation,
-            agent_key="test-agent",
-            input={"messages": []},
-        )
-        
-        await queue.enqueue(run.id, "test-agent")
-        
-        # Run should still be queued
-        run.refresh_from_db()
-        assert run.status == RunStatus.QUEUED
-    
-    @pytest.mark.asyncio
-    async def test_claim_run(self, queue, conversation):
+        """Create a SyncPostgresQueue instance."""
+        return SyncPostgresQueue(lease_ttl_seconds=30)
+
+    def test_claim_run(self, queue, conversation):
         """Test claiming a run."""
         run = AgentRun.objects.create(
             conversation=conversation,
             agent_key="test-agent",
             input={"messages": []},
         )
-        
+
         worker_id = "worker-1"
-        claimed = await queue.claim(worker_id)
-        
-        assert claimed is not None
-        assert claimed.id == run.id
-        
+        claimed = queue.claim(worker_id)
+
+        assert len(claimed) == 1
+        assert claimed[0].run_id == run.id
+
         run.refresh_from_db()
         assert run.status == RunStatus.RUNNING
         assert run.lease_owner == worker_id
         assert run.lease_expires_at is not None
-    
-    @pytest.mark.asyncio
-    async def test_claim_no_available_runs(self, queue, db):
+
+    def test_claim_no_available_runs(self, queue, db):
         """Test claiming when no runs are available."""
         worker_id = "worker-1"
-        claimed = await queue.claim(worker_id)
-        
-        assert claimed is None
-    
-    @pytest.mark.asyncio
-    async def test_claim_respects_agent_keys_filter(self, queue, conversation):
+        claimed = queue.claim(worker_id)
+
+        assert claimed == []
+
+    def test_claim_batch(self, queue, conversation):
+        """Test claiming multiple runs in a batch."""
+        for i in range(5):
+            AgentRun.objects.create(
+                conversation=conversation,
+                agent_key="test-agent",
+                input={"messages": []},
+            )
+
+        claimed = queue.claim("worker-1", batch_size=3)
+        assert len(claimed) == 3
+
+    def test_claim_respects_agent_keys_filter(self, queue, conversation):
         """Test claiming respects agent_keys filter."""
-        run1 = AgentRun.objects.create(
+        AgentRun.objects.create(
             conversation=conversation,
             agent_key="agent-a",
             input={"messages": []},
         )
-        run2 = AgentRun.objects.create(
+        AgentRun.objects.create(
             conversation=conversation,
             agent_key="agent-b",
             input={"messages": []},
         )
-        
+
         # Only claim agent-b runs
-        queue_filtered = PostgresQueue(
-            lease_ttl_seconds=30,
-            agent_keys=["agent-b"],
-        )
-        
-        claimed = await queue_filtered.claim("worker-1")
-        
-        assert claimed is not None
-        assert claimed.agent_key == "agent-b"
-    
-    @pytest.mark.asyncio
-    async def test_renew_lease(self, queue, conversation):
-        """Test renewing a lease."""
+        claimed = queue.claim("worker-1", agent_keys=["agent-b"])
+
+        assert len(claimed) == 1
+        assert claimed[0].agent_key == "agent-b"
+
+    def test_extend_lease(self, queue, conversation):
+        """Test extending a lease."""
         run = AgentRun.objects.create(
             conversation=conversation,
             agent_key="test-agent",
             input={"messages": []},
         )
-        
+
         worker_id = "worker-1"
-        claimed = await queue.claim(worker_id)
-        original_expires = claimed.lease_expires_at
-        
-        # Renew the lease
-        success = await queue.renew_lease(run.id, worker_id)
-        
+        claimed = queue.claim(worker_id)
+        original_expires = claimed[0].lease_expires_at
+
+        # Extend the lease
+        success = queue.extend_lease(run.id, worker_id, seconds=60)
+
         assert success
-        
+
         run.refresh_from_db()
         assert run.lease_expires_at > original_expires
-    
-    @pytest.mark.asyncio
-    async def test_renew_lease_wrong_owner(self, queue, conversation):
-        """Test renewing lease fails for wrong owner."""
+
+    def test_extend_lease_wrong_owner(self, queue, conversation):
+        """Test extending lease fails for wrong owner."""
         run = AgentRun.objects.create(
             conversation=conversation,
             agent_key="test-agent",
             input={"messages": []},
         )
-        
-        await queue.claim("worker-1")
-        
-        # Try to renew with different worker
-        success = await queue.renew_lease(run.id, "worker-2")
-        
+
+        queue.claim("worker-1")
+
+        # Try to extend with different worker
+        success = queue.extend_lease(run.id, "worker-2", seconds=60)
+
         assert not success
-    
-    @pytest.mark.asyncio
-    async def test_release(self, queue, conversation):
-        """Test releasing a run."""
+
+    def test_release_success(self, queue, conversation):
+        """Test releasing a run successfully."""
         run = AgentRun.objects.create(
             conversation=conversation,
             agent_key="test-agent",
             input={"messages": []},
         )
-        
+
         worker_id = "worker-1"
-        await queue.claim(worker_id)
-        
-        await queue.release(run.id, worker_id)
-        
-        run.refresh_from_db()
-        assert run.lease_owner is None
-        assert run.lease_expires_at is None
-    
-    @pytest.mark.asyncio
-    async def test_complete_success(self, queue, conversation):
-        """Test completing a run successfully."""
-        run = AgentRun.objects.create(
-            conversation=conversation,
-            agent_key="test-agent",
-            input={"messages": []},
-        )
-        
-        worker_id = "worker-1"
-        await queue.claim(worker_id)
-        
-        await queue.complete(
+        queue.claim(worker_id)
+
+        queue.release(
             run.id,
             worker_id,
             success=True,
             output={"response": "Done!"},
         )
-        
+
         run.refresh_from_db()
         assert run.status == RunStatus.SUCCEEDED
         assert run.output == {"response": "Done!"}
         assert run.finished_at is not None
-    
-    @pytest.mark.asyncio
-    async def test_complete_failure(self, queue, conversation):
-        """Test completing a run with failure."""
+        assert run.lease_owner == ""
+        assert run.lease_expires_at is None
+
+    def test_release_failure(self, queue, conversation):
+        """Test releasing a run with failure."""
         run = AgentRun.objects.create(
             conversation=conversation,
             agent_key="test-agent",
             input={"messages": []},
         )
-        
+
         worker_id = "worker-1"
-        await queue.claim(worker_id)
-        
-        await queue.complete(
+        queue.claim(worker_id)
+
+        queue.release(
             run.id,
             worker_id,
             success=False,
-            error="Something went wrong",
+            error={"message": "Something went wrong"},
         )
-        
+
         run.refresh_from_db()
         assert run.status == RunStatus.FAILED
-        assert run.error == "Something went wrong"
-    
-    @pytest.mark.asyncio
-    async def test_reclaim_expired_lease(self, queue, conversation):
+        assert run.error == {"message": "Something went wrong"}
+
+    def test_cancel(self, queue, conversation):
+        """Test cancelling a run."""
+        run = AgentRun.objects.create(
+            conversation=conversation,
+            agent_key="test-agent",
+            input={"messages": []},
+        )
+
+        success = queue.cancel(run.id)
+        assert success
+
+        assert queue.is_cancelled(run.id)
+
+    def test_reclaim_expired_lease(self, queue, conversation):
         """Test reclaiming a run with expired lease."""
         run = AgentRun.objects.create(
             conversation=conversation,
@@ -212,13 +211,31 @@ class TestPostgresQueue:
             lease_owner="dead-worker",
             lease_expires_at=timezone.now() - timedelta(minutes=5),
         )
-        
+
         # New worker should be able to claim
-        claimed = await queue.claim("new-worker")
-        
-        assert claimed is not None
-        assert claimed.id == run.id
-        
+        claimed = queue.claim("new-worker")
+
+        assert len(claimed) == 1
+        assert claimed[0].run_id == run.id
+
         run.refresh_from_db()
         assert run.lease_owner == "new-worker"
 
+    def test_recover_expired_leases(self, queue, conversation):
+        """Test recovering expired leases."""
+        # Create a run with expired lease
+        run = AgentRun.objects.create(
+            conversation=conversation,
+            agent_key="test-agent",
+            input={"messages": []},
+            status=RunStatus.RUNNING,
+            lease_owner="dead-worker",
+            lease_expires_at=timezone.now() - timedelta(minutes=5),
+        )
+
+        count = queue.recover_expired_leases()
+        assert count == 1
+
+        run.refresh_from_db()
+        assert run.status == RunStatus.QUEUED
+        assert run.lease_owner == ""

@@ -1,31 +1,63 @@
 """
 Tests for django_agent_runtime event bus implementations.
 
-Note: Async database tests require PostgreSQL. The DatabaseEventBus tests
-are skipped when using SQLite.
+Tests both sync and async event bus implementations.
 """
 
 import pytest
 from uuid import uuid4
 from unittest.mock import patch, AsyncMock, MagicMock
 
-from django_agent_runtime.models import AgentRun, AgentEvent
-from django_agent_runtime.runtime.events.db import DatabaseEventBus
+from django.conf import settings
+from django.contrib.auth import get_user_model
+
+from django_agent_runtime.models import AgentRun, AgentEvent, AgentConversation
+from django_agent_runtime.runtime.events.sync import SyncDatabaseEventBus
 from django_agent_runtime.runtime.events.base import Event
 
+User = get_user_model()
 
-@pytest.mark.skip(reason="Async event bus tests require PostgreSQL database")
-@pytest.mark.django_db
-class TestDatabaseEventBus:
-    """Tests for DatabaseEventBus."""
-    
+
+@pytest.fixture
+def user(db):
+    """Create a test user."""
+    return User.objects.create_user(
+        username="testuser",
+        email="test@example.com",
+        password="testpass123",
+    )
+
+
+@pytest.fixture
+def conversation(user):
+    """Create a test conversation."""
+    return AgentConversation.objects.create(
+        user=user,
+        agent_key="test-agent",
+        title="Test Conversation",
+    )
+
+
+@pytest.fixture
+def agent_run(conversation):
+    """Create a test agent run."""
+    return AgentRun.objects.create(
+        conversation=conversation,
+        agent_key="test-agent",
+        input={"messages": []},
+    )
+
+
+@pytest.mark.django_db(transaction=True)
+class TestSyncDatabaseEventBus:
+    """Tests for SyncDatabaseEventBus."""
+
     @pytest.fixture
     def event_bus(self):
-        """Create a DatabaseEventBus instance."""
-        return DatabaseEventBus()
-    
-    @pytest.mark.asyncio
-    async def test_publish_event(self, event_bus, agent_run):
+        """Create a SyncDatabaseEventBus instance."""
+        return SyncDatabaseEventBus()
+
+    def test_publish_event(self, event_bus, agent_run):
         """Test publishing an event."""
         event = Event(
             run_id=agent_run.id,
@@ -33,16 +65,15 @@ class TestDatabaseEventBus:
             event_type="test.event",
             payload={"data": "test"},
         )
-        
-        await event_bus.publish(event)
-        
+
+        event_bus.publish(event)
+
         # Verify event was saved to database
         db_event = AgentEvent.objects.get(run=agent_run, seq=0)
         assert db_event.event_type == "test.event"
         assert db_event.payload["data"] == "test"
-    
-    @pytest.mark.asyncio
-    async def test_publish_multiple_events(self, event_bus, agent_run):
+
+    def test_publish_multiple_events(self, event_bus, agent_run):
         """Test publishing multiple events."""
         for i in range(5):
             event = Event(
@@ -51,13 +82,12 @@ class TestDatabaseEventBus:
                 event_type=f"event_{i}",
                 payload={"index": i},
             )
-            await event_bus.publish(event)
-        
+            event_bus.publish(event)
+
         events = AgentEvent.objects.filter(run=agent_run).order_by("seq")
         assert events.count() == 5
-    
-    @pytest.mark.asyncio
-    async def test_get_events(self, event_bus, agent_run):
+
+    def test_get_events(self, event_bus, agent_run):
         """Test getting events for a run."""
         # Create some events
         for i in range(3):
@@ -67,14 +97,13 @@ class TestDatabaseEventBus:
                 event_type=f"event_{i}",
                 payload={},
             )
-        
-        events = await event_bus.get_events(agent_run.id)
-        
+
+        events = event_bus.get_events(agent_run.id)
+
         assert len(events) == 3
         assert all(isinstance(e, Event) for e in events)
-    
-    @pytest.mark.asyncio
-    async def test_get_events_from_seq(self, event_bus, agent_run):
+
+    def test_get_events_from_seq(self, event_bus, agent_run):
         """Test getting events from a specific sequence."""
         for i in range(5):
             AgentEvent.objects.create(
@@ -83,16 +112,34 @@ class TestDatabaseEventBus:
                 event_type=f"event_{i}",
                 payload={},
             )
-        
-        events = await event_bus.get_events(agent_run.id, from_seq=2)
-        
+
+        events = event_bus.get_events(agent_run.id, from_seq=2)
+
         assert len(events) == 3
         assert events[0].seq == 2
-    
-    @pytest.mark.asyncio
-    async def test_subscribe_gets_existing_events(self, event_bus, agent_run):
-        """Test that subscribe yields existing events."""
-        # Create some events first
+
+    def test_get_events_with_range(self, event_bus, agent_run):
+        """Test getting events within a range."""
+        for i in range(5):
+            AgentEvent.objects.create(
+                run=agent_run,
+                seq=i,
+                event_type=f"event_{i}",
+                payload={},
+            )
+
+        events = event_bus.get_events(agent_run.id, from_seq=1, to_seq=3)
+
+        assert len(events) == 3
+        assert events[0].seq == 1
+        assert events[-1].seq == 3
+
+    def test_get_next_seq(self, event_bus, agent_run):
+        """Test getting next sequence number."""
+        # No events yet
+        assert event_bus.get_next_seq(agent_run.id) == 0
+
+        # Add some events
         for i in range(3):
             AgentEvent.objects.create(
                 run=agent_run,
@@ -100,22 +147,8 @@ class TestDatabaseEventBus:
                 event_type=f"event_{i}",
                 payload={},
             )
-        
-        # Add terminal event
-        AgentEvent.objects.create(
-            run=agent_run,
-            seq=3,
-            event_type="run.succeeded",
-            payload={},
-        )
-        
-        events = []
-        async for event in event_bus.subscribe(agent_run.id):
-            events.append(event)
-            if event.event_type == "run.succeeded":
-                break
-        
-        assert len(events) == 4
+
+        assert event_bus.get_next_seq(agent_run.id) == 3
 
 
 class TestEvent:

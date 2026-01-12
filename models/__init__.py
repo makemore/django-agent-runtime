@@ -6,6 +6,7 @@ Provides:
 - AgentRun: Individual agent execution
 - AgentEvent: Append-only event log
 - AgentCheckpoint: State snapshots for recovery
+- Persistence models: Memory, Conversation, Message, Task, Preferences
 """
 
 from django_agent_runtime.models.base import (
@@ -21,6 +22,16 @@ from django_agent_runtime.models.concrete import (
     AgentCheckpoint,
 )
 
+# Import persistence models so Django can discover them
+from django_agent_runtime.persistence.models import (
+    Memory,
+    PersistenceConversation,
+    PersistenceMessage,
+    PersistenceTaskList,
+    PersistenceTask,
+    Preferences,
+)
+
 __all__ = [
     # Abstract models (for custom implementations)
     "AbstractAgentConversation",
@@ -32,5 +43,12 @@ __all__ = [
     "AgentRun",
     "AgentEvent",
     "AgentCheckpoint",
+    # Persistence models
+    "Memory",
+    "PersistenceConversation",
+    "PersistenceMessage",
+    "PersistenceTaskList",
+    "PersistenceTask",
+    "Preferences",
 ]
 
