@@ -30,6 +30,7 @@ class Memory(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
     
     class Meta:
+        app_label = "django_agent_runtime"
         db_table = "agent_runtime_memory"
         unique_together = [("user", "key")]
         verbose_name = "Agent Memory"
@@ -65,6 +66,7 @@ class PersistenceConversation(models.Model):
     active_branch_id = models.UUIDField(null=True, blank=True)
 
     class Meta:
+        app_label = "django_agent_runtime"
         db_table = "agent_runtime_persistence_conversation"
         ordering = ["-updated_at"]
         verbose_name = "Persistence Conversation"
@@ -99,6 +101,7 @@ class PersistenceMessage(models.Model):
     branch_id = models.UUIDField(null=True, blank=True, db_index=True)
 
     class Meta:
+        app_label = "django_agent_runtime"
         db_table = "agent_runtime_persistence_message"
         ordering = ["timestamp"]
         verbose_name = "Persistence Message"
@@ -135,6 +138,7 @@ class PersistenceTaskList(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
     
     class Meta:
+        app_label = "django_agent_runtime"
         db_table = "agent_runtime_persistence_task_list"
         ordering = ["-updated_at"]
         verbose_name = "Persistence Task List"
@@ -182,6 +186,7 @@ class PersistenceTask(models.Model):
     last_error = models.TextField(blank=True)
 
     class Meta:
+        app_label = "django_agent_runtime"
         db_table = "agent_runtime_persistence_task"
         ordering = ["created_at"]
         verbose_name = "Persistence Task"
@@ -210,6 +215,7 @@ class Preferences(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
+        app_label = "django_agent_runtime"
         db_table = "agent_runtime_preferences"
         unique_together = [("user", "key")]
         verbose_name = "Agent Preference"
@@ -261,6 +267,7 @@ class Fact(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
+        app_label = "django_agent_runtime"
         db_table = "agent_runtime_fact"
         unique_together = [("user", "key")]
         verbose_name = "Fact"
@@ -290,6 +297,7 @@ class Summary(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
+        app_label = "django_agent_runtime"
         db_table = "agent_runtime_summary"
         ordering = ["-created_at"]
         verbose_name = "Summary"
@@ -323,6 +331,7 @@ class Embedding(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
+        app_label = "django_agent_runtime"
         db_table = "agent_runtime_embedding"
         verbose_name = "Embedding"
         verbose_name_plural = "Embeddings"
@@ -402,6 +411,7 @@ class AuditEntry(models.Model):
     metadata = models.JSONField(default=dict, blank=True)
 
     class Meta:
+        app_label = "django_agent_runtime"
         db_table = "agent_runtime_audit_entry"
         ordering = ["-timestamp"]
         verbose_name = "Audit Entry"
@@ -449,6 +459,7 @@ class ErrorRecord(models.Model):
     metadata = models.JSONField(default=dict, blank=True)
 
     class Meta:
+        app_label = "django_agent_runtime"
         db_table = "agent_runtime_error_record"
         ordering = ["-timestamp"]
         verbose_name = "Error Record"
@@ -485,6 +496,7 @@ class PerformanceMetric(models.Model):
     metadata = models.JSONField(default=dict, blank=True)
 
     class Meta:
+        app_label = "django_agent_runtime"
         db_table = "agent_runtime_performance_metric"
         ordering = ["-timestamp"]
         verbose_name = "Performance Metric"
