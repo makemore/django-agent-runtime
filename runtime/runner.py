@@ -20,7 +20,7 @@ from uuid import UUID
 
 from django.conf import settings as django_settings
 
-from django_agent_runtime.conf import runtime_settings
+from django_agent_runtime.conf import runtime_settings, get_event_visibility
 from django_agent_runtime.runtime.interfaces import (
     AgentRuntime,
     EventType,
@@ -75,17 +75,59 @@ class RunContextImpl:
         """Emit an event to the event bus."""
         event_type_str = event_type.value if isinstance(event_type, EventType) else event_type
 
+        # Get visibility for this event type
+        visibility_level, ui_visible = get_event_visibility(event_type_str)
+
         event = Event(
             run_id=self.run_id,
             seq=self._seq,
             event_type=event_type_str,
             payload=payload,
             timestamp=datetime.now(timezone.utc),
+            visibility_level=visibility_level,
+            ui_visible=ui_visible,
         )
 
-        debug_print(f"Emitting event: type={event_type_str}, seq={self._seq}")
+        # Add detail for specific event types
+        detail = ""
+        if event_type == EventType.TOOL_CALL:
+            tool_name = payload.get("name", "unknown")
+            tool_args = str(payload.get("arguments", {}))[:80]
+            detail = f" -> {tool_name}({tool_args})"
+        elif event_type == EventType.ASSISTANT_MESSAGE:
+            content = str(payload.get("content", ""))[:80]
+            detail = f" -> {content}{'...' if len(str(payload.get('content', ''))) > 80 else ''}"
+
+        debug_print(f"Emitting event: type={event_type_str}, seq={self._seq}, visible={ui_visible}{detail}")
         await self._event_bus.publish(event)
         self._seq += 1
+
+    async def emit_user_message(self, content: str) -> None:
+        """
+        Emit a message that will always be shown to the user.
+
+        This is a convenience method for emitting assistant messages.
+
+        Args:
+            content: The message content to display
+        """
+        await self.emit(EventType.ASSISTANT_MESSAGE, {"content": content})
+
+    async def emit_error(self, error: str, details: dict = None) -> None:
+        """
+        Emit an error that will be shown to the user.
+
+        This is for runtime errors that should be displayed to users,
+        distinct from run.failed which is the final failure event.
+
+        Args:
+            error: The error message
+            details: Optional additional error details
+        """
+        await self.emit(EventType.ERROR, {
+            "message": error,
+            "details": details or {},
+        })
 
     async def checkpoint(self, state: dict) -> None:
         """Save a state checkpoint."""
@@ -199,6 +241,10 @@ class AgentRunner:
             # Build context
             ctx = await self._build_context(queued_run, runtime)
             debug_print(f"Context built: {len(ctx.input_messages)} messages")
+            for i, msg in enumerate(ctx.input_messages):
+                role = msg.get("role", "unknown")
+                content = msg.get("content", "")[:100]  # Truncate for readability
+                debug_print(f"  [{i}] {role}: {content}{'...' if len(msg.get('content', '')) > 100 else ''}")
 
             # Emit started event
             await ctx.emit(EventType.RUN_STARTED, {
@@ -236,7 +282,11 @@ class AgentRunner:
             except Exception as e:
                 print(f"[agent-runner] Runtime error in run {run_id}: {e}", flush=True)
                 traceback.print_exc()
-                await self._handle_error(run_id, ctx, runtime, e)
+                await self._handle_error(
+                    run_id, ctx, runtime, e,
+                    attempt=queued_run.attempt,
+                    max_attempts=self.settings.DEFAULT_MAX_ATTEMPTS,
+                )
 
             finally:
                 heartbeat_task.cancel()
@@ -411,9 +461,14 @@ class AgentRunner:
         ctx: RunContextImpl,
         runtime: AgentRuntime,
         error: Exception,
+        attempt: int = 1,
+        max_attempts: int = None,
     ) -> None:
         """Handle run error with retry logic."""
-        print(f"[agent-runner] Run {run_id} failed: {error}", flush=True)
+        if max_attempts is None:
+            max_attempts = self.settings.DEFAULT_MAX_ATTEMPTS
+
+        print(f"[agent-runner] Run {run_id} failed (attempt {attempt}/{max_attempts}): {error}", flush=True)
 
         # Let runtime classify the error
         error_info = await runtime.on_error(ctx, error)
@@ -425,6 +480,7 @@ class AgentRunner:
                 retriable=True,
             )
 
+        # Build comprehensive error dict for events and storage
         error_dict = {
             "type": error_info.type,
             "message": error_info.message,
@@ -433,21 +489,40 @@ class AgentRunner:
             "details": error_info.details,
         }
 
-        if error_info.retriable:
+        # Check if we should retry
+        can_retry = error_info.retriable and attempt < max_attempts
+
+        if can_retry:
             # Try to requeue
             requeued = await self.queue.requeue_for_retry(
                 run_id,
                 self.worker_id,
                 error_dict,
-                delay_seconds=self._calculate_backoff(ctx),
+                delay_seconds=self._calculate_backoff(ctx, attempt),
             )
 
             if requeued:
-                print(f"[agent-runner] Run {run_id} requeued for retry", flush=True)
+                print(f"[agent-runner] Run {run_id} requeued for retry (attempt {attempt + 1})", flush=True)
+                # Emit an error event so UI knows about the retry
+                await ctx.emit(EventType.ERROR, {
+                    "message": f"Error occurred, retrying... (attempt {attempt}/{max_attempts})",
+                    "error": error_info.message,
+                    "error_type": error_info.type,
+                    "attempt": attempt,
+                    "max_attempts": max_attempts,
+                    "retriable": True,
+                })
                 return
 
-        # Final failure
-        await ctx.emit(EventType.RUN_FAILED, {"error": error_dict})
+        # Final failure - emit detailed run.failed event
+        await ctx.emit(EventType.RUN_FAILED, {
+            "error": error_dict["message"],
+            "error_type": error_dict["type"],
+            "error_details": error_dict,
+            "attempt": attempt,
+            "max_attempts": max_attempts,
+            "retriable": False,  # No more retries
+        })
 
         await self.queue.release(
             run_id,
@@ -456,15 +531,8 @@ class AgentRunner:
             error=error_dict,
         )
 
-    def _calculate_backoff(self, ctx: RunContextImpl) -> int:
+    def _calculate_backoff(self, ctx: RunContextImpl, attempt: int = 1) -> int:
         """Calculate exponential backoff delay."""
-        from django_agent_runtime.models import AgentRun
-        from asgiref.sync import async_to_sync
-
-        # This is called from async context, but we need sync access
-        # In practice, attempt is already in the context
-        attempt = 1  # Default
-
         base = self.settings.RETRY_BACKOFF_BASE
         max_backoff = self.settings.RETRY_BACKOFF_MAX
 

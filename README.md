@@ -447,6 +447,61 @@ const eventSource = new EventSource(
 );
 ```
 
+## Event Visibility
+
+Events have visibility levels that control what's shown to users in the UI:
+
+| Level | Description |
+|-------|-------------|
+| `internal` | Never shown to UI (heartbeats, checkpoints) |
+| `debug` | Shown only in debug mode (tool calls, tool results) |
+| `user` | Always shown to users (messages, errors) |
+
+### Configuration
+
+```python
+DJANGO_AGENT_RUNTIME = {
+    'EVENT_VISIBILITY': {
+        'run.started': 'internal',
+        'run.failed': 'user',
+        'assistant.message': 'user',
+        'tool.call': 'debug',
+        'tool.result': 'debug',
+        'state.checkpoint': 'internal',
+        'error': 'user',
+    },
+    'DEBUG_MODE': False,  # When True, 'debug' events become visible
+}
+```
+
+### SSE Filtering
+
+The SSE endpoint filters events by visibility:
+
+```javascript
+// Only user-visible events (default)
+new EventSource(`/api/agents/runs/${runId}/events/`);
+
+// Include debug events
+new EventSource(`/api/agents/runs/${runId}/events/?include_debug=true`);
+
+// Include all events (for debugging)
+new EventSource(`/api/agents/runs/${runId}/events/?include_all=true`);
+```
+
+### Helper Methods
+
+Agent runtimes can use convenience methods:
+
+```python
+async def run(self, ctx: RunContext) -> RunResult:
+    # Emit a message always shown to users
+    await ctx.emit_user_message("Processing your request...")
+
+    # Emit an error shown to users
+    await ctx.emit_error("Something went wrong", {"code": "ERR_001"})
+```
+
 ## Configuration Reference
 
 | Setting | Type | Default | Description |
@@ -461,22 +516,26 @@ const eventSource = new EventSource(
 | `MAX_RETRIES` | int | `3` | Retry attempts on failure |
 | `RUNTIME_REGISTRY` | list | `[]` | Agent registration functions |
 | `ANONYMOUS_SESSION_MODEL` | str | `None` | Path to anonymous session model |
+| `EVENT_VISIBILITY` | dict | See above | Event visibility configuration |
+| `DEBUG_MODE` | bool | `False` | Show debug-level events in UI |
 | `LANGFUSE_ENABLED` | bool | `False` | Enable Langfuse tracing |
 
 ## Event Types
 
-| Event | Description |
-|-------|-------------|
-| `run.started` | Run execution began |
-| `run.succeeded` | Run completed successfully |
-| `run.failed` | Run failed with error |
-| `run.cancelled` | Run was cancelled |
-| `run.timed_out` | Run exceeded timeout |
-| `tool.call` | Tool was invoked |
-| `tool.result` | Tool returned result |
-| `assistant.message` | LLM generated message |
-| `step.completed` | Agent step completed |
-| `checkpoint` | State checkpoint saved |
+| Event | Visibility | Description |
+|-------|------------|-------------|
+| `run.started` | internal | Run execution began |
+| `run.succeeded` | internal | Run completed successfully |
+| `run.failed` | user | Run failed with error |
+| `run.cancelled` | user | Run was cancelled |
+| `run.timed_out` | user | Run exceeded timeout |
+| `run.heartbeat` | internal | Worker heartbeat |
+| `tool.call` | debug | Tool was invoked |
+| `tool.result` | debug | Tool returned result |
+| `assistant.message` | user | LLM generated message |
+| `assistant.delta` | user | Token streaming delta |
+| `state.checkpoint` | internal | State checkpoint saved |
+| `error` | user | Runtime error (distinct from run.failed) |
 
 ## Management Commands
 

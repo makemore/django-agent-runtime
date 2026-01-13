@@ -15,6 +15,13 @@ class Event:
     An event emitted by an agent runtime.
 
     Events are the communication channel between workers and UI.
+
+    Visibility:
+        - ui_visible: Whether this event should be displayed in UI
+        - visibility_level: "internal", "debug", or "user"
+
+    The visibility is determined by the event type and configuration.
+    See conf.py EVENT_VISIBILITY for default mappings.
     """
 
     run_id: UUID
@@ -22,6 +29,8 @@ class Event:
     event_type: str
     payload: dict = field(default_factory=dict)
     timestamp: datetime = field(default_factory=datetime.utcnow)
+    visibility_level: str = field(default="user")  # "internal", "debug", "user"
+    ui_visible: bool = field(default=True)  # Computed based on visibility_level and DEBUG_MODE
 
     def to_dict(self) -> dict:
         """Convert to dictionary for serialization."""
@@ -31,6 +40,8 @@ class Event:
             "type": self.event_type,
             "payload": self.payload,
             "ts": self.timestamp.isoformat(),
+            "visibility_level": self.visibility_level,
+            "ui_visible": self.ui_visible,
         }
 
     @classmethod
@@ -42,6 +53,8 @@ class Event:
             event_type=data["type"],
             payload=data.get("payload", {}),
             timestamp=datetime.fromisoformat(data["ts"]),
+            visibility_level=data.get("visibility_level", "user"),
+            ui_visible=data.get("ui_visible", True),
         )
 
 

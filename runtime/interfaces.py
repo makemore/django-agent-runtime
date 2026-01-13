@@ -15,6 +15,18 @@ from typing import Any, Callable, Optional, Protocol, TypedDict
 from uuid import UUID
 
 
+class EventVisibility(str, Enum):
+    """
+    Visibility levels for events.
+
+    Controls which events are shown to users in the UI.
+    """
+
+    INTERNAL = "internal"  # Never shown to UI (checkpoints, heartbeats)
+    DEBUG = "debug"  # Shown only in debug mode (tool calls, tool results)
+    USER = "user"  # Always shown to users (assistant messages, errors)
+
+
 class EventType(str, Enum):
     """
     Standard event types emitted by agent runtimes.
@@ -40,6 +52,9 @@ class EventType(str, Enum):
 
     # State events
     STATE_CHECKPOINT = "state.checkpoint"
+
+    # Error events (distinct from run.failed - for runtime errors shown to users)
+    ERROR = "error"
 
 
 class Message(TypedDict, total=False):
@@ -127,6 +142,30 @@ class RunContext(Protocol):
         Args:
             event_type: Type of event (use EventType enum)
             payload: Event payload data
+        """
+        ...
+
+    async def emit_user_message(self, content: str) -> None:
+        """
+        Emit a message that will always be shown to the user.
+
+        This is a convenience method for emitting assistant messages.
+
+        Args:
+            content: The message content to display
+        """
+        ...
+
+    async def emit_error(self, error: str, details: dict = None) -> None:
+        """
+        Emit an error that will be shown to the user.
+
+        This is for runtime errors that should be displayed to users,
+        distinct from run.failed which is the final failure event.
+
+        Args:
+            error: The error message
+            details: Optional additional error details
         """
         ...
 

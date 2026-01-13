@@ -85,6 +85,32 @@ class AgentRuntimeSettings:
     # Model must have: token field, is_expired property
     ANONYMOUS_SESSION_MODEL: Optional[str] = None
 
+    # Event visibility configuration
+    # Controls which events are shown to users in the UI
+    # Levels: "internal" (never shown), "debug" (shown in debug mode), "user" (always shown)
+    EVENT_VISIBILITY: dict = field(default_factory=lambda: {
+        # Lifecycle events
+        "run.started": "internal",
+        "run.heartbeat": "internal",
+        "run.succeeded": "internal",
+        "run.failed": "user",  # Always show errors
+        "run.cancelled": "user",
+        "run.timed_out": "user",
+        # Message events
+        "assistant.delta": "user",  # Token streaming
+        "assistant.message": "user",  # Complete messages
+        # Tool events
+        "tool.call": "debug",
+        "tool.result": "debug",
+        # State events
+        "state.checkpoint": "internal",
+        # Error events
+        "error": "user",  # Runtime errors always shown
+    })
+
+    # When True, 'debug' visibility events become visible to UI
+    DEBUG_MODE: bool = False
+
     def __post_init__(self):
         """Validate settings after initialization."""
         valid_queue_backends = {"postgres", "redis_streams"}
@@ -183,3 +209,33 @@ def reset_settings():
     """Reset cached settings (useful for testing)."""
     global _settings_instance
     _settings_instance = None
+
+
+def get_event_visibility(event_type: str) -> tuple[str, bool]:
+    """
+    Get the visibility level and ui_visible flag for an event type.
+
+    Args:
+        event_type: The event type string (e.g., "run.started", "assistant.message")
+
+    Returns:
+        Tuple of (visibility_level, ui_visible)
+        - visibility_level: "internal", "debug", or "user"
+        - ui_visible: True if the event should be shown in UI
+    """
+    settings = runtime_settings()
+    visibility_map = settings.EVENT_VISIBILITY
+    debug_mode = settings.DEBUG_MODE
+
+    # Get visibility level from config, default to "user" for unknown events
+    visibility_level = visibility_map.get(event_type, "user")
+
+    # Determine if visible in UI
+    if visibility_level == "internal":
+        ui_visible = False
+    elif visibility_level == "debug":
+        ui_visible = debug_mode
+    else:  # "user"
+        ui_visible = True
+
+    return visibility_level, ui_visible

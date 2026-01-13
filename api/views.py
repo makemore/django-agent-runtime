@@ -235,12 +235,17 @@ def sync_event_stream(request, run_id: str):
     Sync SSE endpoint for streaming events.
 
     This is a plain Django view (not DRF) to avoid content negotiation issues.
-    
+
     Authorization is checked by verifying the user owns the run (via conversation
     or metadata). The outer project controls authentication via middleware.
-    
+
     For token-based auth with SSE (where headers can't be set), pass the token
     as a query parameter: ?token=<auth_token>
+
+    Query Parameters:
+        from_seq: Start from this sequence number (default: 0)
+        include_debug: Include debug-level events (default: false)
+        include_all: Include all events including internal (default: false)
     """
     import time
     from django.http import JsonResponse
@@ -251,6 +256,8 @@ def sync_event_stream(request, run_id: str):
         return JsonResponse({"error": "Invalid run ID"}, status=400)
 
     from_seq = int(request.GET.get("from_seq", 0))
+    include_debug = request.GET.get("include_debug", "").lower() in ("true", "1", "yes")
+    include_all = request.GET.get("include_all", "").lower() in ("true", "1", "yes")
 
     try:
         run = AgentRun.objects.select_related("conversation").get(id=run_uuid)
@@ -309,6 +316,23 @@ def sync_event_stream(request, run_id: str):
     if not settings.ENABLE_SSE:
         return JsonResponse({"error": "SSE streaming is disabled"}, status=503)
 
+    # Import visibility helper
+    from django_agent_runtime.conf import get_event_visibility
+
+    def should_include_event(event_type: str) -> bool:
+        """Determine if an event should be included based on visibility settings."""
+        if include_all:
+            return True
+
+        visibility_level, ui_visible = get_event_visibility(event_type)
+
+        if visibility_level == "internal":
+            return False
+        elif visibility_level == "debug":
+            return include_debug or settings.DEBUG_MODE
+        else:  # "user"
+            return True
+
     def event_generator():
         current_seq = from_seq
 
@@ -322,24 +346,34 @@ def sync_event_stream(request, run_id: str):
             )
 
             for event in events:
-                data = {
-                    "run_id": str(event.run_id),
-                    "seq": event.seq,
-                    "type": event.event_type,
-                    "payload": event.payload,
-                    "ts": event.timestamp.isoformat(),
-                }
-                # Use named events so browsers can use addEventListener
-                yield f"event: {event.event_type}\ndata: {json.dumps(data)}\n\n"
                 current_seq = event.seq + 1
 
-                # Check for terminal events
-                if event.event_type in (
+                # Check for terminal events (always process these for loop control)
+                is_terminal = event.event_type in (
                     "run.succeeded",
                     "run.failed",
                     "run.cancelled",
                     "run.timed_out",
-                ):
+                )
+
+                # Filter by visibility
+                if should_include_event(event.event_type):
+                    # Get visibility info for the response
+                    visibility_level, ui_visible = get_event_visibility(event.event_type)
+
+                    data = {
+                        "run_id": str(event.run_id),
+                        "seq": event.seq,
+                        "type": event.event_type,
+                        "payload": event.payload,
+                        "ts": event.timestamp.isoformat(),
+                        "visibility_level": visibility_level,
+                        "ui_visible": ui_visible,
+                    }
+                    # Use named events so browsers can use addEventListener
+                    yield f"event: {event.event_type}\ndata: {json.dumps(data)}\n\n"
+
+                if is_terminal:
                     return
 
             # Check if run is complete
