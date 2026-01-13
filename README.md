@@ -11,6 +11,8 @@ A production-ready Django app for AI agent execution. Provides everything you ne
 
 | Version | Date | Changes |
 |---------|------|---------|
+| **0.3.6** | 2025-01-13 | Auto-reload for `runagent` in DEBUG mode (like Django's runserver) |
+| **0.3.5** | 2025-01-13 | Added Recent Updates changelog to README |
 | **0.3.4** | 2025-01-13 | Documentation updates for message history |
 | **0.3.3** | 2025-01-13 | Added `conversation.get_message_history()` for retrieving full message sequences |
 | **0.3.2** | 2025-01-13 | Event visibility system - filter events by `internal`/`debug`/`user` levels |
@@ -593,6 +595,20 @@ python manage.py runagent \
     --agent-keys chat-agent,tool-agent \
     --queue-poll-interval 1.0
 ```
+
+#### Auto-Reload (Development)
+
+In `DEBUG=True` mode, `runagent` automatically reloads when Python files change—just like Django's `runserver`:
+
+```bash
+# Auto-reload enabled by default in DEBUG mode
+python manage.py runagent
+
+# Disable auto-reload
+python manage.py runagent --noreload
+```
+
+**Note:** Auto-reload only works in single-process mode. Multi-process mode (`--processes > 1`) automatically disables auto-reload.
 
 ## Frontend Integration
 

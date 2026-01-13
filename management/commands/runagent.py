@@ -5,6 +5,7 @@ Usage:
     ./manage.py runagent
     ./manage.py runagent --processes 4 --concurrency 20
     ./manage.py runagent --queue redis --agent-keys my-agent,other-agent
+    ./manage.py runagent --noreload  # Disable auto-reload in DEBUG mode
 """
 
 import asyncio
@@ -14,10 +15,12 @@ import os
 import signal
 import sys
 import uuid
+from datetime import datetime
 from typing import Optional
 
 from django.conf import settings as django_settings
 from django.core.management.base import BaseCommand
+from django.utils import autoreload
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +36,10 @@ def debug_print(msg: str):
 
 class Command(BaseCommand):
     help = "Run agent workers to process agent runs"
+
+    # Validation is called explicitly each time the worker restarts with autoreload
+    requires_system_checks = []
+    suppressed_base_arguments = {"--verbosity", "--traceback"}
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -84,8 +91,48 @@ class Command(BaseCommand):
             default=None,
             help="Worker ID (default: auto-generated)",
         )
+        parser.add_argument(
+            "--noreload",
+            action="store_true",
+            help="Disable auto-reload when code changes (only applies in DEBUG mode)",
+        )
+        parser.add_argument(
+            "--skip-checks",
+            action="store_true",
+            help="Skip system checks.",
+        )
 
     def handle(self, *args, **options):
+        # In DEBUG mode with autoreload enabled, use Django's autoreloader
+        use_reloader = DEBUG and not options.get("noreload", False)
+
+        if use_reloader:
+            # Note: autoreload only works well with single process mode
+            if options.get("processes") and options["processes"] > 1:
+                self.stdout.write(
+                    self.style.WARNING(
+                        "Auto-reload is not compatible with multi-process mode. "
+                        "Using --noreload or set processes=1 for auto-reload."
+                    )
+                )
+                self._run_inner(*args, **options)
+            else:
+                # Force single process for autoreload
+                options["processes"] = 1
+                autoreload.run_with_reloader(self._run_inner, *args, **options)
+        else:
+            self._run_inner(*args, **options)
+
+    def _run_inner(self, *args, **options):
+        """Inner run method - called directly or via autoreloader."""
+        # If an exception was silenced in ManagementUtility.execute in order
+        # to be raised in the child process, raise it now.
+        if DEBUG and not options.get("noreload", False):
+            autoreload.raise_last_exception()
+
+        if not options.get("skip_checks", False):
+            self.check(display_num_errors=True)
+
         from django_agent_runtime.conf import runtime_settings
 
         settings = runtime_settings()
@@ -98,6 +145,11 @@ class Command(BaseCommand):
         if agent_keys:
             agent_keys = [k.strip() for k in agent_keys.split(",")]
 
+        # Print startup info
+        now = datetime.now().strftime("%B %d, %Y - %X")
+        quit_command = "CTRL-BREAK" if sys.platform == "win32" else "CONTROL-C"
+
+        self.stdout.write(f"{now}")
         self.stdout.write(
             self.style.SUCCESS(
                 f"Starting agent runtime with {processes} process(es), "
@@ -107,9 +159,16 @@ class Command(BaseCommand):
         self.stdout.write(f"Queue backend: {queue_backend}")
         if agent_keys:
             self.stdout.write(f"Agent keys: {agent_keys}")
-        
+
         if DEBUG:
-            self.stdout.write(self.style.WARNING("DEBUG mode: verbose logging enabled"))
+            if not options.get("noreload", False):
+                self.stdout.write(
+                    self.style.WARNING("DEBUG mode: auto-reload enabled (use --noreload to disable)")
+                )
+            else:
+                self.stdout.write(self.style.WARNING("DEBUG mode: verbose logging enabled"))
+
+        self.stdout.write(f"Quit with {quit_command}.")
 
         if processes == 1:
             # Single process mode - run directly
