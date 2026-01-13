@@ -140,6 +140,127 @@ class AbstractAgentConversation(models.Model):
         except Exception:
             return None
 
+    def get_message_history(self, include_failed_runs: bool = False) -> list[dict]:
+        """
+        Get the full message history across all runs in this conversation.
+
+        Returns messages in chronological order, including:
+        - Input messages from each run
+        - Assistant responses (including tool calls)
+        - Tool results
+
+        Args:
+            include_failed_runs: If True, include messages from failed runs.
+                                 Default is False (only successful runs).
+
+        Returns:
+            List of Message dicts in the framework-neutral format:
+            [
+                {"role": "user", "content": "..."},
+                {"role": "assistant", "content": "...", "tool_calls": [...]},
+                {"role": "tool", "content": "...", "tool_call_id": "..."},
+                ...
+            ]
+        """
+        from django_agent_runtime.models.base import RunStatus
+
+        # Get runs in chronological order
+        runs_qs = self.runs.order_by("created_at")
+
+        if not include_failed_runs:
+            runs_qs = runs_qs.filter(status=RunStatus.SUCCEEDED)
+
+        messages = []
+        seen_message_hashes = set()  # Avoid duplicates from overlapping input
+
+        for run in runs_qs:
+            # Get input messages (user messages that started this run)
+            input_data = run.input or {}
+            input_messages = input_data.get("messages", [])
+
+            # Add input messages (avoiding duplicates)
+            for msg in input_messages:
+                # Create a hash to detect duplicates
+                msg_hash = _message_hash(msg)
+                if msg_hash not in seen_message_hashes:
+                    messages.append(_normalize_message(msg))
+                    seen_message_hashes.add(msg_hash)
+
+            # Get output messages (assistant responses, tool calls, etc.)
+            output_data = run.output or {}
+            output_messages = output_data.get("final_messages", [])
+
+            for msg in output_messages:
+                msg_hash = _message_hash(msg)
+                if msg_hash not in seen_message_hashes:
+                    messages.append(_normalize_message(msg))
+                    seen_message_hashes.add(msg_hash)
+
+        return messages
+
+    def get_last_assistant_message(self) -> dict | None:
+        """
+        Get the most recent assistant message from the conversation.
+
+        Returns:
+            The last assistant message dict, or None if no assistant messages exist.
+        """
+        messages = self.get_message_history()
+        for msg in reversed(messages):
+            if msg.get("role") == "assistant":
+                return msg
+        return None
+
+
+def _message_hash(msg: dict) -> str:
+    """Create a hash for deduplication of messages."""
+    import hashlib
+    import json
+
+    # Use role + content + tool_call_id for uniqueness
+    key_parts = [
+        msg.get("role", ""),
+        str(msg.get("content", "")),
+        msg.get("tool_call_id", ""),
+    ]
+    # Include tool_calls if present
+    if msg.get("tool_calls"):
+        key_parts.append(json.dumps(msg["tool_calls"], sort_keys=True))
+
+    key = "|".join(key_parts)
+    return hashlib.md5(key.encode()).hexdigest()
+
+
+def _normalize_message(msg: dict) -> dict:
+    """
+    Normalize a message to the framework-neutral Message format.
+
+    Ensures consistent structure regardless of how it was stored.
+    """
+    normalized = {
+        "role": msg.get("role", "user"),
+    }
+
+    # Handle content (can be string, dict, or list)
+    content = msg.get("content")
+    if content is not None:
+        normalized["content"] = content
+
+    # Optional fields - only include if present
+    if msg.get("name"):
+        normalized["name"] = msg["name"]
+
+    if msg.get("tool_call_id"):
+        normalized["tool_call_id"] = msg["tool_call_id"]
+
+    if msg.get("tool_calls"):
+        normalized["tool_calls"] = msg["tool_calls"]
+
+    if msg.get("metadata"):
+        normalized["metadata"] = msg["metadata"]
+
+    return normalized
+
 
 class AbstractAgentRun(models.Model):
     """
