@@ -263,13 +263,39 @@ GET /api/agents/conversations/
 Groups related agent runs together:
 
 ```python
-from django_agent_runtime.models import Conversation
+from django_agent_runtime.models import AgentConversation
 
-conversation = Conversation.objects.create(
+conversation = AgentConversation.objects.create(
     user=request.user,
+    agent_key="chat-agent",
     title="My Chat",
     metadata={"source": "web"},
 )
+```
+
+#### Message History
+
+Get the full message history across all runs in a conversation:
+
+```python
+# Get all messages (user, assistant, tool calls, tool results)
+messages = conversation.get_message_history()
+
+# Include messages from failed runs
+messages = conversation.get_message_history(include_failed_runs=True)
+
+# Get just the last assistant message
+last_msg = conversation.get_last_assistant_message()
+```
+
+Returns messages in the framework-neutral format:
+```python
+[
+    {"role": "user", "content": "What's the weather?"},
+    {"role": "assistant", "content": None, "tool_calls": [...]},
+    {"role": "tool", "content": "72°F sunny", "tool_call_id": "call_123"},
+    {"role": "assistant", "content": "The weather is 72°F and sunny."},
+]
 ```
 
 ### AgentRun
@@ -284,6 +310,9 @@ run = AgentRun.objects.create(
     agent_key="chat-agent",
     input={"messages": [...]},
 )
+
+# After completion, output contains final_messages
+messages = run.output.get("final_messages", [])
 ```
 
 ### AgentEvent
