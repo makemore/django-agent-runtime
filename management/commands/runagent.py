@@ -303,7 +303,7 @@ class Command(BaseCommand):
         # Shutdown event
         shutdown_event = asyncio.Event()
 
-        # Handle signals
+        # Handle signals (only works in main thread)
         loop = asyncio.get_event_loop()
 
         def handle_shutdown():
@@ -313,8 +313,10 @@ class Command(BaseCommand):
         for sig in (signal.SIGINT, signal.SIGTERM):
             try:
                 loop.add_signal_handler(sig, handle_shutdown)
-            except NotImplementedError:
-                # Windows doesn't support add_signal_handler
+            except (NotImplementedError, RuntimeError):
+                # NotImplementedError: Windows doesn't support add_signal_handler
+                # RuntimeError: Can't set signal handler when not in main thread
+                #              (happens with autoreload - Django handles signals for us)
                 pass
 
         # Background task for lease recovery
