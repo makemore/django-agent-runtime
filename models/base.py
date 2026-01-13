@@ -27,6 +27,23 @@ class AbstractAgentConversation(models.Model):
 
     A conversation represents a multi-turn interaction with an agent.
     Supports both authenticated users and anonymous sessions.
+
+    Anonymous Session Support:
+        The abstract model stores anonymous_session_id as a UUID field.
+        This allows the runtime to work without requiring a specific session model.
+
+        To enable anonymous sessions:
+        1. Set ANONYMOUS_SESSION_MODEL in DJANGO_AGENT_RUNTIME settings
+        2. The model must have a 'token' field and optionally 'is_expired' property
+
+        For a proper FK relationship, create a custom conversation model::
+
+            class MyAgentConversation(AbstractAgentConversation):
+                anonymous_session = models.ForeignKey(
+                    "myapp.AnonymousSession",
+                    on_delete=models.SET_NULL,
+                    null=True, blank=True,
+                )
     """
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -40,9 +57,14 @@ class AbstractAgentConversation(models.Model):
         related_name="agent_conversations",
     )
 
-    # Optional anonymous session association
-    # Note: Concrete model should define this FK to avoid import issues
-    # anonymous_session = models.ForeignKey(...)
+    # Optional anonymous session association (stores session ID as UUID)
+    # This allows anonymous sessions without requiring a specific model FK
+    anonymous_session_id = models.UUIDField(
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text="UUID of the anonymous session (if using anonymous sessions)",
+    )
 
     # Agent identification
     agent_key = models.CharField(
@@ -71,7 +93,52 @@ class AbstractAgentConversation(models.Model):
     @property
     def owner(self):
         """Return the owner (User or AnonymousSession) of this conversation."""
-        return self.user or getattr(self, 'anonymous_session', None)
+        if self.user:
+            return self.user
+        # Try to get anonymous_session FK if it exists (custom model)
+        if hasattr(self, 'anonymous_session') and self.anonymous_session:
+            return self.anonymous_session
+        # Fall back to resolving from anonymous_session_id
+        return self.get_anonymous_session()
+
+    def get_anonymous_session(self):
+        """
+        Get the anonymous session object if configured and available.
+
+        Returns the session object or None if:
+        - No anonymous_session_id is set
+        - ANONYMOUS_SESSION_MODEL is not configured
+        - Session doesn't exist or is expired
+        """
+        if not self.anonymous_session_id:
+            return None
+
+        # Check if we have a direct FK (custom model)
+        if hasattr(self, 'anonymous_session'):
+            return self.anonymous_session
+
+        # Resolve from configured model
+        from django_agent_runtime.conf import runtime_settings
+
+        settings_obj = runtime_settings()
+        model_path = settings_obj.ANONYMOUS_SESSION_MODEL
+
+        if not model_path:
+            return None
+
+        try:
+            from django.apps import apps
+            app_label, model_name = model_path.rsplit('.', 1)
+            AnonymousSession = apps.get_model(app_label, model_name)
+            session = AnonymousSession.objects.get(id=self.anonymous_session_id)
+
+            # Check if expired
+            if hasattr(session, 'is_expired') and session.is_expired:
+                return None
+
+            return session
+        except Exception:
+            return None
 
 
 class AbstractAgentRun(models.Model):

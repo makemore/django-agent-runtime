@@ -375,6 +375,78 @@ class ToolAgent(AgentRuntime):
         )
 ```
 
+## Anonymous Sessions
+
+django-agent-runtime supports anonymous sessions for unauthenticated users who have a session token. This is useful for public-facing chat interfaces.
+
+### Setup
+
+1. **Configure the anonymous session model** in your settings:
+
+```python
+DJANGO_AGENT_RUNTIME = {
+    # ... other settings ...
+    'ANONYMOUS_SESSION_MODEL': 'accounts.AnonymousSession',
+}
+```
+
+2. **Create your anonymous session model** with required fields:
+
+```python
+# accounts/models.py
+import uuid
+from django.db import models
+from django.utils import timezone
+
+class AnonymousSession(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    token = models.CharField(max_length=64, unique=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+
+    @property
+    def is_expired(self):
+        return timezone.now() > self.expires_at
+```
+
+3. **Set up authentication** in your ViewSets:
+
+```python
+from rest_framework.authentication import TokenAuthentication
+from django_agent_runtime.api.views import BaseAgentRunViewSet, BaseAgentConversationViewSet
+from django_agent_runtime.api.permissions import (
+    AnonymousSessionAuthentication,
+    IsAuthenticatedOrAnonymousSession,
+)
+
+class AgentConversationViewSet(BaseAgentConversationViewSet):
+    authentication_classes = [TokenAuthentication, AnonymousSessionAuthentication]
+    permission_classes = [IsAuthenticatedOrAnonymousSession]
+
+class AgentRunViewSet(BaseAgentRunViewSet):
+    authentication_classes = [TokenAuthentication, AnonymousSessionAuthentication]
+    permission_classes = [IsAuthenticatedOrAnonymousSession]
+```
+
+### Client Usage
+
+Pass the session token via the `X-Anonymous-Token` header:
+
+```bash
+curl -X POST https://api.example.com/agent/runs/ \
+  -H "X-Anonymous-Token: your-session-token" \
+  -H "Content-Type: application/json" \
+  -d '{"agent_key": "chat-agent", "messages": [{"role": "user", "content": "Hello!"}]}'
+```
+
+For SSE streaming (where headers can't be set), use a query parameter:
+
+```javascript
+const eventSource = new EventSource(
+  `/api/agents/runs/${runId}/events/?anonymous_token=your-session-token`
+);
+```
+
 ## Configuration Reference
 
 | Setting | Type | Default | Description |
@@ -388,6 +460,7 @@ class ToolAgent(AgentRuntime):
 | `RUN_TIMEOUT_SECONDS` | int | `900` | Maximum run duration |
 | `MAX_RETRIES` | int | `3` | Retry attempts on failure |
 | `RUNTIME_REGISTRY` | list | `[]` | Agent registration functions |
+| `ANONYMOUS_SESSION_MODEL` | str | `None` | Path to anonymous session model |
 | `LANGFUSE_ENABLED` | bool | `False` | Enable Langfuse tracing |
 
 ## Event Types

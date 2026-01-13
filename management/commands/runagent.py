@@ -16,9 +16,19 @@ import sys
 import uuid
 from typing import Optional
 
+from django.conf import settings as django_settings
 from django.core.management.base import BaseCommand
 
 logger = logging.getLogger(__name__)
+
+# Check DEBUG mode
+DEBUG = getattr(django_settings, 'DEBUG', False)
+
+
+def debug_print(msg: str):
+    """Print debug message if Django DEBUG is True."""
+    if DEBUG:
+        print(f"[agent-worker] {msg}", flush=True)
 
 
 class Command(BaseCommand):
@@ -97,6 +107,9 @@ class Command(BaseCommand):
         self.stdout.write(f"Queue backend: {queue_backend}")
         if agent_keys:
             self.stdout.write(f"Agent keys: {agent_keys}")
+        
+        if DEBUG:
+            self.stdout.write(self.style.WARNING("DEBUG mode: verbose logging enabled"))
 
         if processes == 1:
             # Single process mode - run directly
@@ -163,6 +176,8 @@ class Command(BaseCommand):
         """Run a single worker process."""
         # Generate worker ID
         worker_id = options.get("worker_id") or f"worker-{worker_num}-{uuid.uuid4().hex[:8]}"
+        
+        debug_print(f"Worker {worker_id} starting...")
 
         # Run the async worker loop
         asyncio.run(
@@ -198,6 +213,7 @@ class Command(BaseCommand):
             queue_kwargs["redis_url"] = settings.REDIS_URL
 
         queue = get_queue(queue_backend, **queue_kwargs)
+        debug_print(f"Queue initialized: {queue_backend}")
 
         # Initialize event bus
         event_bus_kwargs = {}
@@ -207,6 +223,7 @@ class Command(BaseCommand):
             event_bus_kwargs["persist_token_deltas"] = settings.PERSIST_TOKEN_DELTAS
 
         event_bus = get_event_bus(settings.EVENT_BUS_BACKEND, **event_bus_kwargs)
+        debug_print(f"Event bus initialized: {settings.EVENT_BUS_BACKEND}")
 
         # Initialize trace sink
         trace_sink = get_trace_sink()
@@ -219,7 +236,7 @@ class Command(BaseCommand):
             trace_sink=trace_sink,
         )
 
-        logger.info(f"Worker {worker_id} started")
+        print(f"[agent-worker] Worker {worker_id} ready, polling for runs...", flush=True)
 
         # Semaphore for concurrency control
         semaphore = asyncio.Semaphore(concurrency)
@@ -231,7 +248,7 @@ class Command(BaseCommand):
         loop = asyncio.get_event_loop()
 
         def handle_shutdown():
-            logger.info(f"Worker {worker_id} shutting down...")
+            print(f"[agent-worker] Worker {worker_id} shutting down...", flush=True)
             shutdown_event.set()
 
         for sig in (signal.SIGINT, signal.SIGTERM):
@@ -248,6 +265,7 @@ class Command(BaseCommand):
 
         # Main processing loop
         active_tasks: set[asyncio.Task] = set()
+        poll_count = 0
 
         try:
             while not shutdown_event.is_set():
@@ -267,6 +285,10 @@ class Command(BaseCommand):
 
                 if not runs:
                     semaphore.release()
+                    poll_count += 1
+                    # Log every 60 polls (roughly every minute at 1s interval)
+                    if DEBUG and poll_count % 60 == 0:
+                        debug_print(f"Polling... (no runs in queue)")
                     # No work available, wait a bit
                     try:
                         await asyncio.wait_for(
@@ -277,12 +299,19 @@ class Command(BaseCommand):
                         pass
                     continue
 
+                # Reset poll count when we get work
+                poll_count = 0
+
                 # Process the run
                 run = runs[0]
+                print(f"[agent-worker] Claimed run {run.run_id} (agent={run.agent_key})", flush=True)
 
                 async def process_run(r):
                     try:
                         await runner.run_once(r)
+                        debug_print(f"Run {r.run_id} completed")
+                    except Exception as e:
+                        print(f"[agent-worker] ERROR processing run {r.run_id}: {e}", flush=True)
                     finally:
                         semaphore.release()
 
@@ -293,7 +322,7 @@ class Command(BaseCommand):
         finally:
             # Wait for active tasks to complete
             if active_tasks:
-                logger.info(f"Waiting for {len(active_tasks)} active tasks...")
+                print(f"[agent-worker] Waiting for {len(active_tasks)} active tasks...", flush=True)
                 await asyncio.gather(*active_tasks, return_exceptions=True)
 
             # Cancel recovery task
@@ -307,7 +336,7 @@ class Command(BaseCommand):
             await queue.close()
             await event_bus.close()
 
-            logger.info(f"Worker {worker_id} stopped")
+            print(f"[agent-worker] Worker {worker_id} stopped", flush=True)
 
     async def _lease_recovery_loop(self, queue, shutdown_event: asyncio.Event):
         """Periodically recover expired leases."""
@@ -326,6 +355,6 @@ class Command(BaseCommand):
             try:
                 recovered = await queue.recover_expired_leases()
                 if recovered:
-                    logger.info(f"Recovered {recovered} expired leases")
+                    print(f"[agent-worker] Recovered {recovered} expired leases", flush=True)
             except Exception as e:
-                logger.error(f"Error recovering leases: {e}")
+                print(f"[agent-worker] Error recovering leases: {e}", flush=True)

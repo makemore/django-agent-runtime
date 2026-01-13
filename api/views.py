@@ -48,10 +48,10 @@ class BaseAgentConversationViewSet(viewsets.ModelViewSet):
         if self.request.user and self.request.user.is_authenticated:
             return AgentConversation.objects.filter(user=self.request.user)
 
-        # For anonymous sessions, filter by anonymous_session
+        # For anonymous sessions, filter by anonymous_session_id
         session = get_anonymous_session(self.request)
         if session:
-            return AgentConversation.objects.filter(anonymous_session=session)
+            return AgentConversation.objects.filter(anonymous_session_id=session.id)
 
         return AgentConversation.objects.none()
 
@@ -61,7 +61,11 @@ class BaseAgentConversationViewSet(viewsets.ModelViewSet):
             serializer.save(user=self.request.user)
         else:
             session = get_anonymous_session(self.request)
-            serializer.save(anonymous_session=session)
+            if session:
+                # Use the setter which handles both FK and UUID field
+                serializer.save(anonymous_session=session)
+            else:
+                serializer.save()
 
 
 class BaseAgentRunViewSet(viewsets.ModelViewSet):
@@ -96,11 +100,11 @@ class BaseAgentRunViewSet(viewsets.ModelViewSet):
                 Q(conversation__isnull=True, metadata__user_id=self.request.user.id)
             ).select_related("conversation")
 
-        # For anonymous sessions
+        # For anonymous sessions - filter by anonymous_session_id
         session = get_anonymous_session(self.request)
         if session:
             return AgentRun.objects.filter(
-                Q(conversation__anonymous_session=session) |
+                Q(conversation__anonymous_session_id=session.id) |
                 Q(conversation__isnull=True, metadata__anonymous_token=session.token)
             ).select_related("conversation")
 
@@ -146,7 +150,7 @@ class BaseAgentRunViewSet(viewsets.ModelViewSet):
                 elif session:
                     conversation = AgentConversation.objects.get(
                         id=data["conversation_id"],
-                        anonymous_session=session,
+                        anonymous_session_id=session.id,
                     )
             except AgentConversation.DoesNotExist:
                 return Response(
@@ -290,7 +294,8 @@ def sync_event_stream(request, run_id: str):
                     session = AnonymousSession.objects.get(token=anonymous_token)
                     is_expired = getattr(session, 'is_expired', False)
                     if not is_expired:
-                        if run.conversation and run.conversation.anonymous_session == session:
+                        # Check by anonymous_session_id (UUID field)
+                        if run.conversation and run.conversation.anonymous_session_id == session.id:
                             has_access = True
                         elif not run.conversation and run.metadata.get("anonymous_token") == anonymous_token:
                             has_access = True

@@ -18,6 +18,8 @@ from datetime import datetime, timezone
 from typing import Optional
 from uuid import UUID
 
+from django.conf import settings as django_settings
+
 from django_agent_runtime.conf import runtime_settings
 from django_agent_runtime.runtime.interfaces import (
     AgentRuntime,
@@ -33,6 +35,15 @@ from django_agent_runtime.runtime.queue.base import RunQueue, QueuedRun
 from django_agent_runtime.runtime.events.base import EventBus, Event
 
 logger = logging.getLogger(__name__)
+
+# Check DEBUG mode
+DEBUG = getattr(django_settings, 'DEBUG', False)
+
+
+def debug_print(msg: str):
+    """Print debug message if Django DEBUG is True."""
+    if DEBUG:
+        print(f"[agent-runner] {msg}", flush=True)
 
 
 @dataclass
@@ -72,6 +83,7 @@ class RunContextImpl:
             timestamp=datetime.now(timezone.utc),
         )
 
+        debug_print(f"Emitting event: type={event_type_str}, seq={self._seq}")
         await self._event_bus.publish(event)
         self._seq += 1
 
@@ -134,6 +146,7 @@ class RunContextImpl:
             return self._is_cancelled
 
         self._last_cancel_check = now
+
         self._is_cancelled = await self._queue.is_cancelled(self.run_id)
         return self._is_cancelled
 
@@ -171,7 +184,7 @@ class AgentRunner:
         run_id = queued_run.run_id
         agent_key = queued_run.agent_key
 
-        logger.info(f"Starting run {run_id} (agent={agent_key}, attempt={queued_run.attempt})")
+        print(f"[agent-runner] Starting run {run_id} (agent={agent_key}, attempt={queued_run.attempt})", flush=True)
 
         # Start tracing
         if self.trace_sink:
@@ -179,10 +192,13 @@ class AgentRunner:
 
         try:
             # Get the runtime
+            debug_print(f"Getting runtime for agent_key={agent_key}")
             runtime = get_runtime(agent_key)
+            debug_print(f"Got runtime: {runtime.__class__.__name__}")
 
             # Build context
             ctx = await self._build_context(queued_run, runtime)
+            debug_print(f"Context built: {len(ctx.input_messages)} messages")
 
             # Emit started event
             await ctx.emit(EventType.RUN_STARTED, {
@@ -197,6 +213,7 @@ class AgentRunner:
 
             try:
                 # Execute with timeout
+                debug_print(f"Calling runtime.run() with timeout={self.settings.RUN_TIMEOUT_SECONDS}s")
                 result = await asyncio.wait_for(
                     runtime.run(ctx),
                     timeout=self.settings.RUN_TIMEOUT_SECONDS,
@@ -217,6 +234,8 @@ class AgentRunner:
                 await self._handle_cancellation(run_id, ctx)
 
             except Exception as e:
+                print(f"[agent-runner] Runtime error in run {run_id}: {e}", flush=True)
+                traceback.print_exc()
                 await self._handle_error(run_id, ctx, runtime, e)
 
             finally:
@@ -228,7 +247,8 @@ class AgentRunner:
 
         except Exception as e:
             # Error before run started (e.g., runtime not found)
-            logger.exception(f"Failed to start run {run_id}: {e}")
+            print(f"[agent-runner] Failed to start run {run_id}: {e}", flush=True)
+            traceback.print_exc()
             await self.queue.release(
                 run_id,
                 self.worker_id,
@@ -290,7 +310,7 @@ class AgentRunner:
             )
 
             if not extended:
-                logger.warning(f"Lost lease on run {run_id}")
+                print(f"[agent-runner] Lost lease on run {run_id}", flush=True)
                 break
 
             # Emit heartbeat event
@@ -303,7 +323,7 @@ class AgentRunner:
         self, run_id: UUID, ctx: RunContextImpl, result: RunResult
     ) -> None:
         """Handle successful run completion."""
-        logger.info(f"Run {run_id} succeeded")
+        print(f"[agent-runner] Run {run_id} succeeded", flush=True)
 
         output = {
             "final_output": result.final_output,
@@ -342,11 +362,11 @@ class AgentRunner:
             from asgiref.sync import sync_to_async
             await sync_to_async(hook)(str(run_id), output)
         except Exception as e:
-            logger.exception(f"Error in completion hook for run {run_id}: {e}")
+            print(f"[agent-runner] Error in completion hook for run {run_id}: {e}", flush=True)
 
     async def _handle_timeout(self, run_id: UUID, ctx: RunContextImpl) -> None:
         """Handle run timeout."""
-        logger.warning(f"Run {run_id} timed out")
+        print(f"[agent-runner] Run {run_id} timed out after {self.settings.RUN_TIMEOUT_SECONDS}s", flush=True)
 
         await ctx.emit(EventType.RUN_TIMED_OUT, {
             "timeout_seconds": self.settings.RUN_TIMEOUT_SECONDS,
@@ -365,7 +385,7 @@ class AgentRunner:
 
     async def _handle_cancellation(self, run_id: UUID, ctx: RunContextImpl) -> None:
         """Handle run cancellation."""
-        logger.info(f"Run {run_id} cancelled")
+        print(f"[agent-runner] Run {run_id} cancelled", flush=True)
 
         await ctx.emit(EventType.RUN_CANCELLED, {})
 
@@ -393,7 +413,7 @@ class AgentRunner:
         error: Exception,
     ) -> None:
         """Handle run error with retry logic."""
-        logger.exception(f"Run {run_id} failed: {error}")
+        print(f"[agent-runner] Run {run_id} failed: {error}", flush=True)
 
         # Let runtime classify the error
         error_info = await runtime.on_error(ctx, error)
@@ -423,7 +443,7 @@ class AgentRunner:
             )
 
             if requeued:
-                logger.info(f"Run {run_id} requeued for retry")
+                print(f"[agent-runner] Run {run_id} requeued for retry", flush=True)
                 return
 
         # Final failure

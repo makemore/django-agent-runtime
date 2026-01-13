@@ -21,33 +21,70 @@ class AgentConversation(AbstractAgentConversation):
 
     Groups related agent runs into a conversation.
 
-    For anonymous session support, create your own model::
+    Anonymous Session Support:
+        This model uses the anonymous_session_id UUID field from the abstract model.
+        When ANONYMOUS_SESSION_MODEL is configured, the get_anonymous_session() method
+        will resolve the session object.
 
-        from django.db import models
-        from django_agent_runtime.models.base import AbstractAgentConversation
+        The anonymous_session property provides convenient access to the session object.
 
-        class MyAgentConversation(AbstractAgentConversation):
-            anonymous_session = models.ForeignKey(
-                "myapp.MySession",
-                on_delete=models.SET_NULL,
-                null=True,
-                blank=True,
-                related_name="agent_conversations",
-            )
+        For a proper FK relationship with database-level integrity, create your own model::
 
-            class Meta(AbstractAgentConversation.Meta):
-                abstract = False
+            from django.db import models
+            from django_agent_runtime.models.base import AbstractAgentConversation
 
-    Then configure in settings::
+            class MyAgentConversation(AbstractAgentConversation):
+                anonymous_session = models.ForeignKey(
+                    "myapp.MySession",
+                    on_delete=models.SET_NULL,
+                    null=True,
+                    blank=True,
+                    related_name="agent_conversations",
+                )
 
-        DJANGO_AGENT_RUNTIME = {
-            'CONVERSATION_MODEL': 'myapp.MyAgentConversation',
-        }
+                class Meta(AbstractAgentConversation.Meta):
+                    abstract = False
+
+        Then configure in settings::
+
+            DJANGO_AGENT_RUNTIME = {
+                'CONVERSATION_MODEL': 'myapp.MyAgentConversation',
+            }
     """
 
     class Meta(AbstractAgentConversation.Meta):
         abstract = False
         db_table = "agent_runtime_conversation"
+
+    @property
+    def anonymous_session(self):
+        """
+        Get the anonymous session object.
+
+        This property resolves the session from anonymous_session_id using
+        the configured ANONYMOUS_SESSION_MODEL.
+
+        Returns None if:
+        - No anonymous_session_id is set
+        - ANONYMOUS_SESSION_MODEL is not configured
+        - Session doesn't exist or is expired
+        """
+        return self.get_anonymous_session()
+
+    @anonymous_session.setter
+    def anonymous_session(self, session):
+        """
+        Set the anonymous session.
+
+        Accepts either a session object (with an 'id' attribute) or a UUID.
+        """
+        if session is None:
+            self.anonymous_session_id = None
+        elif hasattr(session, 'id'):
+            self.anonymous_session_id = session.id
+        else:
+            # Assume it's a UUID
+            self.anonymous_session_id = session
 
 
 class AgentRun(AbstractAgentRun):
