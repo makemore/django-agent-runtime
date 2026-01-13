@@ -7,6 +7,16 @@
 
 A production-ready Django app for AI agent execution. Provides everything you need to run AI agents in production: database models, REST API, real-time streaming, background workers, and more.
 
+## Recent Updates
+
+| Version | Date | Changes |
+|---------|------|---------|
+| **0.3.4** | 2025-01-13 | Documentation updates for message history |
+| **0.3.3** | 2025-01-13 | Added `conversation.get_message_history()` for retrieving full message sequences |
+| **0.3.2** | 2025-01-13 | Event visibility system - filter events by `internal`/`debug`/`user` levels |
+| **0.3.1** | 2025-01-12 | Anonymous session support for unauthenticated users |
+| **0.3.0** | 2025-01-11 | ViewSet refactor - base classes for custom auth/permissions |
+
 ## Features
 
 - 🔌 **Framework Agnostic** - Works with LangGraph, CrewAI, OpenAI Agents, or custom loops
