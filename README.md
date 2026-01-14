@@ -11,6 +11,7 @@ A production-ready Django app for AI agent execution. Provides everything you ne
 
 | Version | Date | Changes |
 |---------|------|---------|
+| **0.3.9** | 2025-01-14 | Add `[recommended]` and `[framework]` install extras |
 | **0.3.8** | 2025-01-14 | Add agent-frontend docs, agent framework options (OpenAI, Anthropic, LangGraph) |
 | **0.3.7** | 2025-01-13 | Fix auto-reload signal handler in threaded mode |
 | **0.3.6** | 2025-01-13 | Auto-reload for `runagent` in DEBUG mode (like Django's runserver) |
@@ -37,12 +38,18 @@ A production-ready Django app for AI agent execution. Provides everything you ne
 ```bash
 pip install django-agent-runtime
 
+# Recommended: Redis + OpenAI + agent-runtime-framework
+pip install django-agent-runtime[recommended]
+
 # With LLM providers
 pip install django-agent-runtime[openai]
 pip install django-agent-runtime[anthropic]
 
 # With Redis support (recommended for production)
 pip install django-agent-runtime[redis]
+
+# With agent-runtime-framework for journey-based agents
+pip install django-agent-runtime[framework]
 
 # Everything
 pip install django-agent-runtime[all]
