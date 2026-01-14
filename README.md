@@ -41,6 +41,10 @@ pip install django-agent-runtime
 # Recommended: Redis + OpenAI + agent-runtime-framework
 pip install django-agent-runtime[recommended]
 
+# Pick specific extras (comma-separated)
+pip install django-agent-runtime[openai,framework]
+pip install django-agent-runtime[redis,anthropic]
+
 # With LLM providers
 pip install django-agent-runtime[openai]
 pip install django-agent-runtime[anthropic]
