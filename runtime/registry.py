@@ -8,7 +8,7 @@ Supports:
 """
 
 import logging
-from typing import Callable, Optional, Type
+from typing import Callable, Optional, Type, Union
 
 from django_agent_runtime.runtime.interfaces import AgentRuntime
 
@@ -20,8 +20,48 @@ _runtime_factories: dict[str, Callable[[], AgentRuntime]] = {}
 _discovered = False
 
 
+def _is_agent_runtime(obj) -> bool:
+    """
+    Check if an object is an AgentRuntime instance.
+
+    Supports both django_agent_runtime.AgentRuntime and agent_runtime_core.AgentRuntime.
+    Uses duck typing to check for required interface.
+    """
+    # Check for django_agent_runtime.AgentRuntime
+    if isinstance(obj, AgentRuntime):
+        return True
+
+    # Duck-type check for agent_runtime_core.AgentRuntime or similar
+    # Must have 'key' property and 'run' async method
+    if hasattr(obj, 'key') and hasattr(obj, 'run') and callable(getattr(obj, 'run', None)):
+        return True
+
+    return False
+
+
+def _is_agent_runtime_class(cls) -> bool:
+    """
+    Check if a class is an AgentRuntime subclass.
+
+    Supports both django_agent_runtime.AgentRuntime and agent_runtime_core.AgentRuntime.
+    """
+    if not isinstance(cls, type):
+        return False
+
+    # Check for django_agent_runtime.AgentRuntime
+    if issubclass(cls, AgentRuntime):
+        return True
+
+    # Check for agent_runtime_core.AgentRuntime by name
+    for base in cls.__mro__:
+        if base.__name__ == 'AgentRuntime':
+            return True
+
+    return False
+
+
 def register_runtime(
-    runtime: AgentRuntime | Type[AgentRuntime] | Callable[[], AgentRuntime],
+    runtime: Union[AgentRuntime, Type[AgentRuntime], Callable[[], AgentRuntime]],
     key: Optional[str] = None,
 ) -> None:
     """
@@ -44,13 +84,13 @@ def register_runtime(
         # Register a factory
         register_runtime(lambda: MyRuntime(config=get_config()))
     """
-    if isinstance(runtime, AgentRuntime):
+    if _is_agent_runtime(runtime):
         # Instance provided
         runtime_key = key or runtime.key
         _runtimes[runtime_key] = runtime
         logger.info(f"Registered agent runtime: {runtime_key}")
 
-    elif isinstance(runtime, type) and issubclass(runtime, AgentRuntime):
+    elif _is_agent_runtime_class(runtime):
         # Class provided - instantiate it
         instance = runtime()
         runtime_key = key or instance.key

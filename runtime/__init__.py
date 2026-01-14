@@ -14,10 +14,17 @@ from django_agent_runtime.runtime.interfaces import (
     EventType,
 )
 
+from django_agent_runtime.runtime.tools import (
+    django_tool,
+    django_tool_with_context,
+)
+
 __all__ = [
     "AgentRuntime",
     "RunContext",
     "RunResult",
     "EventType",
+    "django_tool",
+    "django_tool_with_context",
 ]
 

@@ -613,7 +613,39 @@ python manage.py runagent --noreload
 
 ## Frontend Integration
 
-### JavaScript SSE Client
+### agent-frontend (Recommended)
+
+The easiest way to add a chat UI is with [agent-frontend](https://github.com/makemore/agent-frontend) - a zero-dependency, embeddable chat widget:
+
+```html
+<!-- Include the widget -->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/makemore/agent-frontend@main/dist/chat-widget.css">
+<script src="https://cdn.jsdelivr.net/gh/makemore/agent-frontend@main/dist/chat-widget.js"></script>
+
+<!-- Initialize -->
+<script>
+  ChatWidget.init({
+    backendUrl: 'https://your-api.com',
+    agentKey: 'chat-agent',
+    title: 'Support Chat',
+    primaryColor: '#0066cc',
+  });
+</script>
+```
+
+Features:
+- **Zero dependencies** - Pure vanilla JavaScript
+- **SSE streaming** - Real-time token-by-token responses
+- **CSS isolated** - Won't conflict with your existing styles
+- **Dark mode** - Automatic based on system preferences
+- **Session management** - Anonymous sessions out of the box
+- **Demo flows** - Built-in auto-run mode for showcasing agent journeys
+
+See the [agent-frontend documentation](https://github.com/makemore/agent-frontend) for full configuration options.
+
+### Custom JavaScript SSE Client
+
+If you're building your own UI:
 
 ```javascript
 const eventSource = new EventSource('/api/agents/runs/550e8400.../events/');
@@ -641,27 +673,235 @@ eventSource.addEventListener('run.failed', (event) => {
 function useAgentRun(runId: string) {
     const [events, setEvents] = useState<AgentEvent[]>([]);
     const [status, setStatus] = useState<'running' | 'complete' | 'error'>('running');
-    
+
     useEffect(() => {
         const es = new EventSource(`/api/agents/runs/${runId}/events/`);
-        
+
         es.onmessage = (event) => {
             const data = JSON.parse(event.data);
             setEvents(prev => [...prev, data]);
-            
+
             if (data.type === 'run.succeeded') setStatus('complete');
             if (data.type === 'run.failed') setStatus('error');
         };
-        
+
         return () => es.close();
     }, [runId]);
-    
+
     return { events, status };
 }
 ```
 
+## Agent Framework Options
+
+django-agent-runtime is framework-agnostic. You can build agents using:
+
+### Option 1: Direct AgentRuntime (Simple)
+
+Best for simple agents or when you want full control:
+
+```python
+from django_agent_runtime.runtime.interfaces import AgentRuntime, RunContext, RunResult
+
+class MyAgent(AgentRuntime):
+    @property
+    def key(self) -> str:
+        return "my-agent"
+
+    async def run(self, ctx: RunContext) -> RunResult:
+        # Your agent logic here
+        ...
+```
+
+### Option 2: agent_runtime_framework (Journey-Based)
+
+Best for multi-step conversational flows with state management:
+
+```bash
+pip install agent_runtime_framework
+```
+
+```python
+from agent_runtime_framework.adapters import DjangoRuntimeAdapter
+from agent_runtime_framework import BaseJourneyState, BaseJourneyTools, ToolSchema
+from enum import Enum
+
+class QuoteStep(str, Enum):
+    WELCOME = "welcome"
+    COLLECT_INFO = "collect_info"
+    GENERATE_QUOTE = "generate_quote"
+    COMPLETE = "complete"
+
+class QuoteState(BaseJourneyState[QuoteStep]):
+    step: QuoteStep = QuoteStep.WELCOME
+    customer_name: str = ""
+    coverage_type: str = ""
+    # ... state fields
+
+class QuoteTools(BaseJourneyTools[QuoteState]):
+    async def save_customer_info(self, name: str, coverage: str) -> str:
+        self.state.customer_name = name
+        self.state.coverage_type = coverage
+        self.state.step = QuoteStep.GENERATE_QUOTE
+        await self._notify_state_change()
+        return f"Got it, {name}! Generating your {coverage} quote..."
+
+class QuoteAgent(DjangoRuntimeAdapter[QuoteState, QuoteTools, QuoteStep]):
+    @property
+    def key(self) -> str:
+        return "quote-agent"
+
+    def get_initial_state(self) -> QuoteState:
+        return QuoteState()
+
+    def get_system_prompt(self, state: QuoteState) -> str:
+        prompts = {
+            QuoteStep.WELCOME: "Welcome the user and ask what coverage they need.",
+            QuoteStep.COLLECT_INFO: "Collect customer name and coverage type.",
+            # ...
+        }
+        return prompts[state.step]
+
+    def get_tool_schemas(self, state: QuoteState) -> list[ToolSchema]:
+        # Return different tools based on current step
+        ...
+
+    def create_tools(self, state, ctx, backend_client) -> QuoteTools:
+        return QuoteTools(state=state)
+
+    async def execute_tool(self, tools, name: str, arguments: dict) -> str:
+        return await getattr(tools, name)(**arguments)
+
+# Register with django-agent-runtime
+from django_agent_runtime.runtime.registry import register_runtime
+register_runtime(QuoteAgent())
+```
+
+The adapter handles:
+- Converting Django's `RunContext` to framework's `AgentContext`
+- State persistence via Django's checkpoint system
+- Event emission through Django's event bus
+- Returning results in Django's `RunResult` format
+
+See [agent_runtime_framework](https://github.com/makemore/agent-runtime-framework) for full documentation.
+
+### Option 3: OpenAI Agents SDK
+
+Use OpenAI's official Agents SDK with django-agent-runtime:
+
+```python
+from django_agent_runtime.runtime.interfaces import AgentRuntime, RunContext, RunResult, EventType
+from agents import Agent, Runner
+
+class OpenAIAgentRuntime(AgentRuntime):
+    @property
+    def key(self) -> str:
+        return "openai-agent"
+
+    def __init__(self):
+        self.agent = Agent(
+            name="Assistant",
+            instructions="You are a helpful assistant.",
+            model="gpt-4o",
+        )
+
+    async def run(self, ctx: RunContext) -> RunResult:
+        # Convert messages to OpenAI format
+        user_message = ctx.input_messages[-1]["content"]
+
+        # Run the OpenAI agent
+        result = await Runner.run(self.agent, user_message)
+
+        # Emit the response
+        await ctx.emit(EventType.ASSISTANT_MESSAGE, {
+            "content": result.final_output,
+        })
+
+        return RunResult(
+            final_output={"response": result.final_output},
+            final_messages=[{"role": "assistant", "content": result.final_output}],
+        )
+```
+
+### Option 4: Anthropic Claude with Tool Use
+
+Use Anthropic's Claude directly:
+
+```python
+from django_agent_runtime.runtime.interfaces import AgentRuntime, RunContext, RunResult, EventType
+import anthropic
+
+class ClaudeAgent(AgentRuntime):
+    @property
+    def key(self) -> str:
+        return "claude-agent"
+
+    def __init__(self):
+        self.client = anthropic.AsyncAnthropic()
+
+    async def run(self, ctx: RunContext) -> RunResult:
+        messages = [
+            {"role": m["role"], "content": m["content"]}
+            for m in ctx.input_messages
+        ]
+
+        response = await self.client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=1024,
+            messages=messages,
+        )
+
+        content = response.content[0].text
+
+        await ctx.emit(EventType.ASSISTANT_MESSAGE, {"content": content})
+
+        return RunResult(
+            final_output={"response": content},
+            final_messages=[{"role": "assistant", "content": content}],
+        )
+```
+
+### Option 5: LangGraph
+
+Wrap LangGraph agents:
+
+```python
+from django_agent_runtime.runtime.interfaces import AgentRuntime, RunContext, RunResult, EventType
+from langgraph.graph import StateGraph
+
+class LangGraphRuntime(AgentRuntime):
+    @property
+    def key(self) -> str:
+        return "langgraph-agent"
+
+    def __init__(self):
+        self.graph = self._build_graph()
+
+    def _build_graph(self) -> StateGraph:
+        # Build your LangGraph here
+        ...
+
+    async def run(self, ctx: RunContext) -> RunResult:
+        # Run the graph
+        result = await self.graph.ainvoke({
+            "messages": ctx.input_messages,
+        })
+
+        final_message = result["messages"][-1]
+        await ctx.emit(EventType.ASSISTANT_MESSAGE, {
+            "content": final_message.content,
+        })
+
+        return RunResult(
+            final_output={"response": final_message.content},
+            final_messages=result["messages"],
+        )
+```
+
 ## Related Packages
 
+- [agent-frontend](https://github.com/makemore/agent-frontend) - Zero-dependency embeddable chat widget for AI agents
+- [agent-runtime-framework](https://github.com/makemore/agent-runtime-framework) - Journey-based conversational agents with state management
 - [agent-runtime-core](https://pypi.org/project/agent-runtime-core/) - The framework-agnostic core library (used internally)
 
 ## Contributing

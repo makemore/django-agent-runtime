@@ -92,7 +92,7 @@ class AgentRuntimeSettings:
         # Lifecycle events
         "run.started": "internal",
         "run.heartbeat": "internal",
-        "run.succeeded": "internal",
+        "run.succeeded": "user",  # Needed for frontend to know run is complete
         "run.failed": "user",  # Always show errors
         "run.cancelled": "user",
         "run.timed_out": "user",

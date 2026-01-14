@@ -370,8 +370,8 @@ def sync_event_stream(request, run_id: str):
                         "visibility_level": visibility_level,
                         "ui_visible": ui_visible,
                     }
-                    # Use named events so browsers can use addEventListener
-                    yield f"event: {event.event_type}\ndata: {json.dumps(data)}\n\n"
+                    # Use unnamed events so onmessage catches all; type is in payload
+                    yield f"data: {json.dumps(data)}\n\n"
 
                 if is_terminal:
                     return
@@ -449,8 +449,8 @@ async def async_event_stream(request, run_id: str):
             async for event in event_bus.subscribe(run_uuid, from_seq=from_seq):
                 data = event.to_dict()
                 event_type = data.get("type", "message")
-                # Use named events so browsers can use addEventListener
-                yield f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
+                # Use unnamed events so onmessage catches all; type is in payload
+                yield f"data: {json.dumps(data)}\n\n"
 
                 # Check for terminal events
                 if event.event_type in (
