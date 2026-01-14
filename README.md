@@ -11,6 +11,7 @@ A production-ready Django app for AI agent execution. Provides everything you ne
 
 | Version | Date | Changes |
 |---------|------|---------|
+| **0.3.8** | 2025-01-14 | Add agent-frontend docs, agent framework options (OpenAI, Anthropic, LangGraph) |
 | **0.3.7** | 2025-01-13 | Fix auto-reload signal handler in threaded mode |
 | **0.3.6** | 2025-01-13 | Auto-reload for `runagent` in DEBUG mode (like Django's runserver) |
 | **0.3.5** | 2025-01-13 | Added Recent Updates changelog to README |
