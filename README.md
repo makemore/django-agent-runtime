@@ -11,6 +11,7 @@ A production-ready Django app for AI agent execution. Provides everything you ne
 
 | Version | Date | Changes |
 |---------|------|---------|
+| **0.3.10** | 2025-01-15 | SSE named events for addEventListener support, flexible registry path format |
 | **0.3.9** | 2025-01-14 | Add `[recommended]` and `[framework]` install extras |
 | **0.3.8** | 2025-01-14 | Add agent-frontend docs, agent framework options (OpenAI, Anthropic, LangGraph) |
 | **0.3.7** | 2025-01-13 | Fix auto-reload signal handler in threaded mode |

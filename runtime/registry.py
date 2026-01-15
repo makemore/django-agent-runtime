@@ -188,21 +188,44 @@ def autodiscover_runtimes() -> None:
     _discover_from_entry_points()
 
 
+def _normalize_import_path(path: str) -> str:
+    """
+    Normalize an import path to use dots instead of colons.
+
+    Supports both formats:
+    - 'myapp.agents:register_agents' (colon separator)
+    - 'myapp.agents.register_agents' (all dots)
+
+    Args:
+        path: Import path in either format
+
+    Returns:
+        Normalized path using dots (e.g., 'myapp.agents.register_agents')
+    """
+    if ':' in path:
+        # Convert 'module.path:attribute' to 'module.path.attribute'
+        module_path, attribute = path.rsplit(':', 1)
+        return f"{module_path}.{attribute}"
+    return path
+
+
 def _discover_from_settings() -> None:
     """Discover runtimes from DJANGO_AGENT_RUNTIME['RUNTIME_REGISTRY']."""
     from django_agent_runtime.conf import runtime_settings
 
     settings = runtime_settings()
 
-    for dotted_path in settings.RUNTIME_REGISTRY:
+    for path in settings.RUNTIME_REGISTRY:
         try:
             from django.utils.module_loading import import_string
 
+            # Normalize path to support both colon and dot separators
+            dotted_path = _normalize_import_path(path)
             register_func = import_string(dotted_path)
             register_func()
-            logger.info(f"Loaded runtime registry from: {dotted_path}")
+            logger.info(f"Loaded runtime registry from: {path}")
         except Exception as e:
-            logger.error(f"Failed to load runtime registry {dotted_path}: {e}")
+            logger.error(f"Failed to load runtime registry {path}: {e}")
 
 
 def _discover_from_entry_points() -> None:
