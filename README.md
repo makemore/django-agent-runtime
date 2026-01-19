@@ -11,6 +11,7 @@ A production-ready Django app for AI agent execution. Provides everything you ne
 
 | Version | Date | Changes |
 |---------|------|---------|
+| **0.3.11** | 2025-01-19 | Add Full Stack Setup Guide for AI agents |
 | **0.3.10** | 2025-01-15 | SSE named events for addEventListener support, flexible registry path format |
 | **0.3.9** | 2025-01-14 | Add `[recommended]` and `[framework]` install extras |
 | **0.3.8** | 2025-01-14 | Add agent-frontend docs, agent framework options (OpenAI, Anthropic, LangGraph) |
@@ -916,6 +917,368 @@ class LangGraphRuntime(AgentRuntime):
 - [agent-frontend](https://github.com/makemore/agent-frontend) - Zero-dependency embeddable chat widget for AI agents
 - [agent-runtime-framework](https://github.com/makemore/agent-runtime-framework) - Journey-based conversational agents with state management
 - [agent-runtime-core](https://pypi.org/project/agent-runtime-core/) - The framework-agnostic core library (used internally)
+
+---
+
+## Full Stack Setup Guide (For AI Agents)
+
+This guide explains how to set up the complete agent stack from scratch. It's designed to be followed by another AI agent or developer.
+
+### Package Overview
+
+| Package | Purpose | Install |
+|---------|---------|---------|
+| **django-agent-runtime** | Django app for agent execution, API, queues, events | `pip install django-agent-runtime[recommended]` |
+| **agent-runtime-core** | Core abstractions (tools, events, config) | Included with django-agent-runtime |
+| **agent-runtime-framework** | Journey-based agents with state management | Included with `[recommended]` or `[framework]` |
+| **@makemore/agent-frontend** | Embeddable chat widget (vanilla JS) | `npm install @makemore/agent-frontend` |
+
+### Step 1: Create Django Project
+
+```bash
+# Create project directory
+mkdir my_agent_project && cd my_agent_project
+
+# Create virtual environment
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+# Install Django and agent runtime with recommended extras
+pip install django django-agent-runtime[recommended]
+
+# Create Django project
+django-admin startproject config .
+python manage.py startapp agents
+```
+
+### Step 2: Configure Django Settings
+
+```python
+# config/settings.py
+
+INSTALLED_APPS = [
+    'django.contrib.admin',
+    'django.contrib.auth',
+    'django.contrib.contenttypes',
+    'django.contrib.sessions',
+    'django.contrib.messages',
+    'django.contrib.staticfiles',
+    'rest_framework',
+    'django_agent_runtime',
+    'agents',
+]
+
+# Agent Runtime Configuration
+DJANGO_AGENT_RUNTIME = {
+    'QUEUE_BACKEND': 'postgres',
+    'EVENT_BUS_BACKEND': 'db',
+    'MODEL_PROVIDER': 'openai',
+    'DEFAULT_MODEL': 'gpt-4o',
+    'RUNTIME_REGISTRY': [
+        'agents.runtimes:register_agents',
+    ],
+}
+
+# Required for API
+REST_FRAMEWORK = {
+    'DEFAULT_AUTHENTICATION_CLASSES': [
+        'rest_framework.authentication.SessionAuthentication',
+    ],
+    'DEFAULT_PERMISSION_CLASSES': [
+        'rest_framework.permissions.AllowAny',  # For testing; tighten in production
+    ],
+}
+
+# CORS for frontend (install django-cors-headers)
+CORS_ALLOW_ALL_ORIGINS = True  # For development only
+```
+
+### Step 3: Create a Simple Agent
+
+```python
+# agents/runtimes.py
+from django_agent_runtime.runtime.interfaces import (
+    AgentRuntime, RunContext, RunResult, EventType
+)
+from django_agent_runtime.runtime.registry import register_runtime
+from django_agent_runtime.runtime.llm import get_llm_client
+
+
+class HelloAgent(AgentRuntime):
+    """A simple agent that responds to messages."""
+
+    @property
+    def key(self) -> str:
+        return "hello-agent"
+
+    async def run(self, ctx: RunContext) -> RunResult:
+        llm = get_llm_client()
+
+        # Add system message
+        messages = [
+            {"role": "system", "content": "You are a friendly assistant. Keep responses brief."},
+            *ctx.input_messages
+        ]
+
+        # Call LLM
+        response = await llm.generate(messages)
+        content = response.message.get("content", "")
+
+        # Emit for real-time streaming
+        await ctx.emit(EventType.ASSISTANT_MESSAGE, {
+            "content": content,
+            "role": "assistant",
+        })
+
+        return RunResult(
+            final_output={"response": content},
+            final_messages=[response.message],
+        )
+
+
+def register_agents():
+    """Called by django-agent-runtime on startup."""
+    register_runtime(HelloAgent())
+```
+
+### Step 4: Set Up API URLs
+
+```python
+# agents/urls.py
+from django.urls import path, include
+from rest_framework.routers import DefaultRouter
+from django_agent_runtime.api.views import (
+    BaseAgentRunViewSet,
+    BaseAgentConversationViewSet,
+    sync_event_stream,
+)
+
+router = DefaultRouter()
+router.register(r'conversations', BaseAgentConversationViewSet, basename='conversation')
+router.register(r'runs', BaseAgentRunViewSet, basename='run')
+
+urlpatterns = [
+    path('', include(router.urls)),
+    path('runs/<str:run_id>/events/', sync_event_stream, name='run-events'),
+]
+```
+
+```python
+# config/urls.py
+from django.contrib import admin
+from django.urls import path, include
+
+urlpatterns = [
+    path('admin/', admin.site.urls),
+    path('api/agents/', include('agents.urls')),
+]
+```
+
+### Step 5: Run Migrations and Start Services
+
+```bash
+# Set your OpenAI API key
+export OPENAI_API_KEY="sk-..."
+
+# Run migrations
+python manage.py migrate
+
+# Start Django server (terminal 1)
+python manage.py runserver
+
+# Start agent workers (terminal 2)
+python manage.py runagent
+```
+
+### Step 6: Test the API
+
+```bash
+# Create a conversation
+curl -X POST http://localhost:8000/api/agents/conversations/ \
+  -H "Content-Type: application/json" \
+  -d '{"agent_key": "hello-agent"}'
+
+# Response: {"id": "conv-uuid-here", ...}
+
+# Create a run (replace CONV_ID)
+curl -X POST http://localhost:8000/api/agents/runs/ \
+  -H "Content-Type: application/json" \
+  -d '{
+    "conversation_id": "CONV_ID",
+    "agent_key": "hello-agent",
+    "messages": [{"role": "user", "content": "Hello! What can you do?"}]
+  }'
+
+# Response: {"id": "run-uuid-here", "status": "queued", ...}
+
+# Stream events (replace RUN_ID)
+curl -N http://localhost:8000/api/agents/runs/RUN_ID/events/
+```
+
+### Step 7: Add Frontend to Next.js
+
+In your Next.js project:
+
+```bash
+npm install @makemore/agent-frontend
+```
+
+Create a chat component:
+
+```tsx
+// components/AgentChat.tsx
+'use client';
+
+import { useEffect } from 'react';
+
+export default function AgentChat() {
+  useEffect(() => {
+    // Import and initialize the widget
+    import('@makemore/agent-frontend/dist/chat-widget.js').then(() => {
+      // @ts-ignore
+      window.ChatWidget?.init({
+        backendUrl: process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000',
+        agentKey: 'hello-agent',
+        title: 'AI Assistant',
+        subtitle: 'Ask me anything!',
+        primaryColor: '#0066cc',
+        position: 'bottom-right',
+        apiEndpoints: {
+          conversations: '/api/agents/conversations/',
+          runs: '/api/agents/runs/',
+          events: '/api/agents/runs/{runId}/events/',
+        },
+      });
+    });
+
+    return () => {
+      // @ts-ignore
+      window.ChatWidget?.destroy?.();
+    };
+  }, []);
+
+  return null; // Widget renders itself
+}
+```
+
+Or use CDN in your layout:
+
+```tsx
+// app/layout.tsx
+export default function RootLayout({ children }) {
+  return (
+    <html>
+      <head>
+        <link
+          rel="stylesheet"
+          href="https://unpkg.com/@makemore/agent-frontend/dist/chat-widget.css"
+        />
+      </head>
+      <body>
+        {children}
+        <script src="https://unpkg.com/@makemore/agent-frontend/dist/chat-widget.js" />
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `
+              document.addEventListener('DOMContentLoaded', function() {
+                ChatWidget.init({
+                  backendUrl: '${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}',
+                  agentKey: 'hello-agent',
+                  title: 'AI Assistant',
+                  primaryColor: '#0066cc',
+                });
+              });
+            `,
+          }}
+        />
+      </body>
+    </html>
+  );
+}
+```
+
+### Step 8: Configure CORS (Production)
+
+```bash
+pip install django-cors-headers
+```
+
+```python
+# config/settings.py
+INSTALLED_APPS = [
+    'corsheaders',
+    ...
+]
+
+MIDDLEWARE = [
+    'corsheaders.middleware.CorsMiddleware',
+    ...
+]
+
+CORS_ALLOWED_ORIGINS = [
+    'http://localhost:3000',  # Next.js dev
+    'https://your-frontend.com',
+]
+```
+
+### Complete File Structure
+
+```
+my_agent_project/
+├── config/
+│   ├── __init__.py
+│   ├── settings.py
+│   ├── urls.py
+│   └── wsgi.py
+├── agents/
+│   ├── __init__.py
+│   ├── runtimes.py      # Your agent implementations
+│   └── urls.py          # API routes
+├── manage.py
+└── requirements.txt
+
+# Next.js frontend (separate repo)
+my-frontend/
+├── app/
+│   └── layout.tsx       # Include chat widget here
+├── components/
+│   └── AgentChat.tsx    # Or as a component
+└── package.json
+```
+
+### Environment Variables
+
+**Django (.env):**
+```bash
+OPENAI_API_KEY=sk-...
+DATABASE_URL=postgres://...  # For production
+REDIS_URL=redis://...        # For production
+DEBUG=True
+```
+
+**Next.js (.env.local):**
+```bash
+NEXT_PUBLIC_API_URL=http://localhost:8000
+```
+
+### Quick Reference Commands
+
+```bash
+# Django
+python manage.py runserver          # Start API server
+python manage.py runagent           # Start agent workers
+python manage.py migrate            # Run migrations
+
+# Next.js
+npm run dev                         # Start frontend
+
+# Testing
+curl -X POST http://localhost:8000/api/agents/conversations/ \
+  -H "Content-Type: application/json" \
+  -d '{"agent_key": "hello-agent"}'
+```
+
+---
 
 ## Contributing
 
