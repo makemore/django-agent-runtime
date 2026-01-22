@@ -3,6 +3,20 @@ Configuration management for django_agent_runtime.
 
 All settings are namespaced under DJANGO_AGENT_RUNTIME in Django settings.
 This module provides defaults and validation.
+
+Debug Mode
+----------
+The framework supports debug/production modes that control exception handling:
+
+- **Debug mode**: Exceptions propagate immediately with full stack traces.
+  Useful for development and debugging.
+- **Production mode**: Exceptions are caught and handled gracefully with
+  retries and user-friendly error messages.
+
+Enable debug mode via:
+1. Environment variable: DJANGO_AGENT_RUNTIME_DEBUG=1
+2. Django settings: DJANGO_AGENT_RUNTIME = {'SWALLOW_EXCEPTIONS': False}
+3. Code: configure(debug=True)
 """
 
 import os
@@ -110,6 +124,11 @@ class AgentRuntimeSettings:
 
     # When True, 'debug' visibility events become visible to UI
     DEBUG_MODE: bool = False
+
+    # Exception handling mode
+    # When False (debug mode), exceptions propagate with full stack traces
+    # When True (production mode), exceptions are caught and handled gracefully
+    SWALLOW_EXCEPTIONS: bool = True
 
     def __post_init__(self):
         """Validate settings after initialization."""
@@ -239,3 +258,95 @@ def get_event_visibility(event_type: str) -> tuple[str, bool]:
         ui_visible = True
 
     return visibility_level, ui_visible
+
+
+# =============================================================================
+# Debug Mode Configuration
+# =============================================================================
+
+def _get_debug_from_env() -> bool:
+    """
+    Check if debug mode is enabled via environment variable.
+
+    Returns:
+        True if DJANGO_AGENT_RUNTIME_DEBUG is set to a truthy value.
+    """
+    debug_env = os.getenv("DJANGO_AGENT_RUNTIME_DEBUG", "").lower()
+    return debug_env in ("1", "true", "yes", "on")
+
+
+def is_debug() -> bool:
+    """
+    Check if debug mode is enabled.
+
+    Debug mode is enabled if:
+    1. DJANGO_AGENT_RUNTIME_DEBUG environment variable is set to "1", "true", "yes", or "on"
+    2. SWALLOW_EXCEPTIONS is False in DJANGO_AGENT_RUNTIME settings
+
+    Returns:
+        True if debug mode is enabled.
+    """
+    # Environment variable takes precedence
+    if _get_debug_from_env():
+        return True
+
+    # Check settings
+    settings_obj = runtime_settings()
+    return not settings_obj.SWALLOW_EXCEPTIONS
+
+
+def should_swallow_exceptions() -> bool:
+    """
+    Check if exceptions should be swallowed (caught and handled gracefully).
+
+    In production mode (default), exceptions are caught and handled with
+    retries and user-friendly error messages.
+
+    In debug mode, exceptions propagate immediately with full stack traces.
+
+    Returns:
+        True if exceptions should be swallowed (production mode).
+        False if exceptions should propagate (debug mode).
+    """
+    return not is_debug()
+
+
+def configure(
+    debug: Optional[bool] = None,
+    swallow_exceptions: Optional[bool] = None,
+) -> None:
+    """
+    Configure the framework's debug/production mode.
+
+    This function modifies the global settings instance. Changes take effect
+    immediately for all subsequent operations.
+
+    Args:
+        debug: Enable debug mode. When True, sets swallow_exceptions=False
+               unless explicitly overridden.
+        swallow_exceptions: Whether to catch exceptions gracefully.
+                           If not specified, derived from debug setting.
+
+    Example:
+        # Enable debug mode (exceptions propagate)
+        configure(debug=True)
+
+        # Production mode (exceptions caught)
+        configure(debug=False)
+
+        # Debug mode but still swallow exceptions (unusual but supported)
+        configure(debug=True, swallow_exceptions=True)
+    """
+    global _settings_instance
+
+    # Ensure settings are loaded
+    settings_obj = runtime_settings()
+
+    if debug is not None:
+        # Auto-adjust swallow_exceptions if not explicitly set
+        if swallow_exceptions is None:
+            settings_obj.SWALLOW_EXCEPTIONS = not debug
+        settings_obj.DEBUG_MODE = debug
+
+    if swallow_exceptions is not None:
+        settings_obj.SWALLOW_EXCEPTIONS = swallow_exceptions

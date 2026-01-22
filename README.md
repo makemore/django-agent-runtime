@@ -11,6 +11,7 @@ A production-ready Django app for AI agent execution. Provides everything you ne
 
 | Version | Date | Changes |
 |---------|------|---------|
+| **0.3.12** | 2026-01-22 | Debug/production mode configuration - control exception handling behavior |
 | **0.3.11** | 2025-01-19 | Add Full Stack Setup Guide for AI agents |
 | **0.3.10** | 2025-01-15 | SSE named events for addEventListener support, flexible registry path format |
 | **0.3.9** | 2025-01-14 | Add `[recommended]` and `[framework]` install extras |
@@ -558,6 +559,72 @@ async def run(self, ctx: RunContext) -> RunResult:
     await ctx.emit_error("Something went wrong", {"code": "ERR_001"})
 ```
 
+## Debug/Production Mode
+
+The framework supports debug and production modes that control exception handling behavior:
+
+| Mode | Behavior |
+|------|----------|
+| **Production** (default) | Exceptions are caught and handled gracefully with retries and user-friendly error messages |
+| **Debug** | Exceptions propagate immediately with full stack traces for easier debugging |
+
+### Enabling Debug Mode
+
+There are three ways to enable debug mode:
+
+**1. Environment Variable (recommended for development)**
+
+```bash
+export DJANGO_AGENT_RUNTIME_DEBUG=1
+```
+
+**2. Django Settings**
+
+```python
+DJANGO_AGENT_RUNTIME = {
+    'SWALLOW_EXCEPTIONS': False,  # False = debug mode
+    # ... other settings
+}
+```
+
+**3. Code Configuration**
+
+```python
+from django_agent_runtime.conf import configure
+
+# Enable debug mode
+configure(debug=True)
+
+# Enable production mode
+configure(debug=False)
+
+# Fine-grained control
+configure(debug=True, swallow_exceptions=True)  # Debug mode but still catch exceptions
+```
+
+### Checking Debug Mode
+
+```python
+from django_agent_runtime.conf import is_debug, should_swallow_exceptions
+
+if is_debug():
+    print("Running in debug mode")
+
+if not should_swallow_exceptions():
+    # Let exceptions propagate
+    raise error
+```
+
+### What Changes in Debug Mode
+
+In debug mode:
+- Runtime errors propagate immediately instead of being caught and retried
+- Registry import errors raise exceptions instead of being logged
+- Completion hook errors propagate instead of being silently logged
+- Full stack traces are available for debugging
+
+This is useful during development to quickly identify and fix issues.
+
 ## Configuration Reference
 
 | Setting | Type | Default | Description |
@@ -574,6 +641,7 @@ async def run(self, ctx: RunContext) -> RunResult:
 | `ANONYMOUS_SESSION_MODEL` | str | `None` | Path to anonymous session model |
 | `EVENT_VISIBILITY` | dict | See above | Event visibility configuration |
 | `DEBUG_MODE` | bool | `False` | Show debug-level events in UI |
+| `SWALLOW_EXCEPTIONS` | bool | `True` | Catch exceptions gracefully (False = debug mode) |
 | `LANGFUSE_ENABLED` | bool | `False` | Enable Langfuse tracing |
 
 ## Event Types

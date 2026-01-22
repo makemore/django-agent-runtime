@@ -211,7 +211,7 @@ def _normalize_import_path(path: str) -> str:
 
 def _discover_from_settings() -> None:
     """Discover runtimes from DJANGO_AGENT_RUNTIME['RUNTIME_REGISTRY']."""
-    from django_agent_runtime.conf import runtime_settings
+    from django_agent_runtime.conf import runtime_settings, should_swallow_exceptions
 
     settings = runtime_settings()
 
@@ -225,11 +225,17 @@ def _discover_from_settings() -> None:
             register_func()
             logger.info(f"Loaded runtime registry from: {path}")
         except Exception as e:
+            # In debug mode, re-raise exceptions immediately
+            if not should_swallow_exceptions():
+                logger.error(f"Failed to load runtime registry {path} (debug mode - re-raising): {e}")
+                raise
             logger.error(f"Failed to load runtime registry {path}: {e}")
 
 
 def _discover_from_entry_points() -> None:
     """Discover runtimes from entry points."""
+    from django_agent_runtime.conf import should_swallow_exceptions
+
     try:
         from importlib.metadata import entry_points
     except ImportError:
@@ -243,7 +249,12 @@ def _discover_from_entry_points() -> None:
                 register_func()
                 logger.info(f"Loaded runtime from entry point: {ep.name}")
             except Exception as e:
+                # In debug mode, re-raise exceptions immediately
+                if not should_swallow_exceptions():
+                    logger.error(f"Failed to load entry point {ep.name} (debug mode - re-raising): {e}")
+                    raise
                 logger.error(f"Failed to load entry point {ep.name}: {e}")
     except Exception as e:
+        # Don't re-raise "no entry points" errors even in debug mode
         logger.debug(f"No entry points found: {e}")
 

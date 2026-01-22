@@ -20,7 +20,7 @@ from uuid import UUID
 
 from django.conf import settings as django_settings
 
-from django_agent_runtime.conf import runtime_settings, get_event_visibility
+from django_agent_runtime.conf import runtime_settings, get_event_visibility, should_swallow_exceptions
 from django_agent_runtime.runtime.interfaces import (
     AgentRuntime,
     EventType,
@@ -280,6 +280,11 @@ class AgentRunner:
                 await self._handle_cancellation(run_id, ctx)
 
             except Exception as e:
+                # In debug mode, re-raise exceptions immediately for full stack traces
+                if not should_swallow_exceptions():
+                    print(f"[agent-runner] Runtime error in run {run_id} (debug mode - re-raising): {e}", flush=True)
+                    raise
+
                 print(f"[agent-runner] Runtime error in run {run_id}: {e}", flush=True)
                 traceback.print_exc()
                 await self._handle_error(
@@ -296,6 +301,11 @@ class AgentRunner:
                     pass
 
         except Exception as e:
+            # In debug mode, re-raise exceptions immediately for full stack traces
+            if not should_swallow_exceptions():
+                print(f"[agent-runner] Failed to start run {run_id} (debug mode - re-raising): {e}", flush=True)
+                raise
+
             # Error before run started (e.g., runtime not found)
             print(f"[agent-runner] Failed to start run {run_id}: {e}", flush=True)
             traceback.print_exc()
@@ -412,6 +422,10 @@ class AgentRunner:
             from asgiref.sync import sync_to_async
             await sync_to_async(hook)(str(run_id), output)
         except Exception as e:
+            # In debug mode, re-raise exceptions immediately
+            if not should_swallow_exceptions():
+                print(f"[agent-runner] Error in completion hook for run {run_id} (debug mode - re-raising): {e}", flush=True)
+                raise
             print(f"[agent-runner] Error in completion hook for run {run_id}: {e}", flush=True)
 
     async def _handle_timeout(self, run_id: UUID, ctx: RunContextImpl) -> None:

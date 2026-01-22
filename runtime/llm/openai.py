@@ -77,28 +77,32 @@ class OpenAIClient(LLMClient):
     def _resolve_api_key(self, explicit_key: Optional[str]) -> Optional[str]:
         """
         Resolve API key with clear priority order.
-        
+
         Priority:
         1. Explicit api_key parameter passed to __init__
         2. OPENAI_API_KEY in DJANGO_AGENT_RUNTIME settings
         3. OPENAI_API_KEY environment variable
-        
+
         Returns:
             Resolved API key or None (let OpenAI client raise its own error)
         """
         if explicit_key:
             return explicit_key
-        
+
         # Try Django settings
         try:
-            from django_agent_runtime.conf import runtime_settings
+            from django_agent_runtime.conf import runtime_settings, should_swallow_exceptions
             settings = runtime_settings()
             settings_key = settings.get_openai_api_key()
             if settings_key:
                 return settings_key
-        except Exception:
+        except Exception as e:
+            # In debug mode, re-raise exceptions immediately
+            from django_agent_runtime.conf import should_swallow_exceptions
+            if not should_swallow_exceptions():
+                raise
             pass
-        
+
         # Fall back to environment variable (OpenAI client will also check this)
         return os.environ.get("OPENAI_API_KEY")
 
