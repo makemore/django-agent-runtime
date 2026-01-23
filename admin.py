@@ -10,6 +10,10 @@ from django_agent_runtime.models import (
     AgentRun,
     AgentEvent,
     AgentCheckpoint,
+    AgentDefinition,
+    AgentVersion,
+    AgentTool,
+    AgentKnowledge,
 )
 
 
@@ -152,4 +156,147 @@ class AgentCheckpointAdmin(admin.ModelAdmin):
     search_fields = ["run__id"]
     readonly_fields = ["id", "run", "seq", "state", "created_at"]
     raw_id_fields = ["run"]
+
+
+# =============================================================================
+# Agent Definition Admin
+# =============================================================================
+
+
+class AgentVersionInline(admin.TabularInline):
+    """Inline for viewing versions on an agent definition."""
+
+    model = AgentVersion
+    extra = 0
+    fields = ["version", "is_active", "is_draft", "model", "created_at"]
+    readonly_fields = ["created_at"]
+    show_change_link = True
+
+
+class AgentToolInline(admin.TabularInline):
+    """Inline for viewing tools on an agent definition."""
+
+    model = AgentTool
+    fk_name = "agent"  # Specify which FK to use (not subagent)
+    extra = 0
+    fields = ["name", "tool_type", "description", "is_active", "order"]
+    show_change_link = True
+
+
+class AgentKnowledgeInline(admin.TabularInline):
+    """Inline for viewing knowledge sources on an agent definition."""
+
+    model = AgentKnowledge
+    extra = 0
+    fields = ["name", "knowledge_type", "inclusion_mode", "is_active", "order"]
+    show_change_link = True
+
+
+@admin.register(AgentDefinition)
+class AgentDefinitionAdmin(admin.ModelAdmin):
+    """Admin for AgentDefinition."""
+
+    list_display = [
+        "name",
+        "slug",
+        "parent",
+        "is_active",
+        "is_public",
+        "is_template",
+        "owner",
+        "updated_at",
+    ]
+    list_filter = ["is_active", "is_public", "is_template", "created_at"]
+    search_fields = ["name", "slug", "description"]
+    readonly_fields = ["id", "created_at", "updated_at"]
+    raw_id_fields = ["owner", "parent"]
+    prepopulated_fields = {"slug": ("name",)}
+    inlines = [AgentVersionInline, AgentToolInline, AgentKnowledgeInline]
+
+    fieldsets = (
+        (None, {
+            "fields": ("id", "name", "slug", "description", "icon")
+        }),
+        ("Inheritance", {
+            "fields": ("parent",),
+        }),
+        ("Ownership & Visibility", {
+            "fields": ("owner", "is_public", "is_template", "is_active"),
+        }),
+        ("Timestamps", {
+            "fields": ("created_at", "updated_at"),
+        }),
+    )
+
+
+@admin.register(AgentVersion)
+class AgentVersionAdmin(admin.ModelAdmin):
+    """Admin for AgentVersion."""
+
+    list_display = ["agent", "version", "is_active", "is_draft", "model", "created_at"]
+    list_filter = ["is_active", "is_draft", "model", "created_at"]
+    search_fields = ["agent__name", "agent__slug", "version"]
+    readonly_fields = ["id", "created_at", "published_at"]
+    raw_id_fields = ["agent"]
+
+    fieldsets = (
+        (None, {
+            "fields": ("id", "agent", "version", "is_active", "is_draft")
+        }),
+        ("Configuration", {
+            "fields": ("system_prompt", "model", "model_settings", "extra_config"),
+        }),
+        ("Metadata", {
+            "fields": ("notes", "created_at", "published_at"),
+        }),
+    )
+
+
+@admin.register(AgentTool)
+class AgentToolAdmin(admin.ModelAdmin):
+    """Admin for AgentTool."""
+
+    list_display = ["name", "agent", "tool_type", "is_active", "order"]
+    list_filter = ["tool_type", "is_active"]
+    search_fields = ["name", "agent__name", "description"]
+    readonly_fields = ["id"]
+    raw_id_fields = ["agent", "subagent"]
+
+    fieldsets = (
+        (None, {
+            "fields": ("id", "agent", "name", "tool_type", "description")
+        }),
+        ("Configuration", {
+            "fields": ("parameters_schema", "builtin_ref", "subagent", "config"),
+        }),
+        ("Status", {
+            "fields": ("is_active", "order"),
+        }),
+    )
+
+
+@admin.register(AgentKnowledge)
+class AgentKnowledgeAdmin(admin.ModelAdmin):
+    """Admin for AgentKnowledge."""
+
+    list_display = ["name", "agent", "knowledge_type", "inclusion_mode", "is_active", "order"]
+    list_filter = ["knowledge_type", "inclusion_mode", "is_active"]
+    search_fields = ["name", "agent__name", "content"]
+    readonly_fields = ["id", "created_at", "updated_at"]
+    raw_id_fields = ["agent"]
+
+    fieldsets = (
+        (None, {
+            "fields": ("id", "agent", "name", "knowledge_type", "inclusion_mode")
+        }),
+        ("Content", {
+            "fields": ("content", "file", "url", "dynamic_config"),
+        }),
+        ("Status", {
+            "fields": ("is_active", "order"),
+        }),
+        ("Timestamps", {
+            "fields": ("created_at", "updated_at"),
+        }),
+    )
 

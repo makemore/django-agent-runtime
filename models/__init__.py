@@ -7,6 +7,7 @@ Provides:
 - AgentEvent: Append-only event log
 - AgentCheckpoint: State snapshots for recovery
 - Persistence models: Memory, Conversation, Message, Task, Preferences
+- Agent Definition models: AgentDefinition, AgentVersion, AgentTool, AgentKnowledge
 """
 
 from django_agent_runtime.models.base import (
@@ -32,6 +33,22 @@ from django_agent_runtime.persistence.models import (
     Preferences,
 )
 
+# Import agent definition models
+from django_agent_runtime.models.definitions import (
+    AgentDefinition,
+    AgentVersion,
+    AgentTool,
+    AgentKnowledge,
+)
+
+# Import step execution models
+from django_agent_runtime.steps.models import (
+    StepCheckpoint,
+    StepEvent,
+    StepStatusChoices,
+    StepEventTypeChoices,
+)
+
 __all__ = [
     # Abstract models (for custom implementations)
     "AbstractAgentConversation",
@@ -50,5 +67,15 @@ __all__ = [
     "PersistenceTaskList",
     "PersistenceTask",
     "Preferences",
+    # Agent Definition models
+    "AgentDefinition",
+    "AgentVersion",
+    "AgentTool",
+    "AgentKnowledge",
+    # Step execution models
+    "StepCheckpoint",
+    "StepEvent",
+    "StepStatusChoices",
+    "StepEventTypeChoices",
 ]
 
