@@ -59,6 +59,24 @@ class AgentRuntimeSettings:
     ENABLE_CHANNELS: bool = False  # Django Channels (optional)
     SSE_KEEPALIVE_SECONDS: int = 15
 
+    # Conversation history
+    # When True, agents automatically receive message history from previous runs
+    # in the same conversation. This enables multi-turn conversations by default.
+    INCLUDE_CONVERSATION_HISTORY: bool = True
+
+    # Maximum number of history messages to include (None = no limit)
+    # Useful for limiting context window usage with long conversations
+    MAX_HISTORY_MESSAGES: Optional[int] = None
+
+    # Auto-generate conversation titles
+    # When True, automatically generates a short title for new conversations
+    # based on the first user message and assistant response
+    AUTO_GENERATE_CONVERSATION_TITLE: bool = True
+
+    # Model to use for title generation (should be fast/cheap)
+    # Good options: "gpt-4o-mini" (OpenAI), "claude-3-haiku-20240307" (Anthropic)
+    TITLE_GENERATION_MODEL: str = "gpt-4o-mini"
+
     # Event persistence
     PERSIST_TOKEN_DELTAS: bool = False  # Token deltas go to Redis only by default
     EVENT_TTL_SECONDS: int = 3600 * 6  # 6 hours in Redis

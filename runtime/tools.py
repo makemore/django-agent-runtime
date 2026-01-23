@@ -70,7 +70,10 @@ def django_tool(
             handler = func
         else:
             # Sync function, wrap in sync_to_async
-            handler = sync_to_async(func, thread_sensitive=True)
+            # Use thread_sensitive=False to run in a thread pool, avoiding
+            # CurrentThreadExecutor conflicts when called from sync views
+            # using loop.run_until_complete()
+            handler = sync_to_async(func, thread_sensitive=False)
         
         # Create the Tool object
         tool = Tool(
@@ -146,11 +149,14 @@ def django_tool_with_context(
                 return await func(ctx, **kwargs)
         else:
             # Sync function, wrap in sync_to_async
+            # Use thread_sensitive=False to run in a thread pool, avoiding
+            # CurrentThreadExecutor conflicts when called from sync views
+            # using loop.run_until_complete()
             @functools.wraps(func)
             async def handler(ctx=None, **kwargs):
                 if ctx is None:
                     raise ValueError(f"Tool {name} requires RunContext but none provided")
-                return await sync_to_async(func, thread_sensitive=True)(ctx, **kwargs)
+                return await sync_to_async(func, thread_sensitive=False)(ctx, **kwargs)
         
         # Create the Tool object
         tool = Tool(

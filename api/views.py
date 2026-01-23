@@ -28,6 +28,7 @@ from django_agent_runtime.api.serializers import (
     AgentRunCreateSerializer,
     AgentRunDetailSerializer,
     AgentConversationSerializer,
+    AgentConversationDetailSerializer,
     AgentEventSerializer,
 )
 from django_agent_runtime.api.permissions import get_anonymous_session
@@ -43,17 +44,30 @@ class BaseAgentConversationViewSet(viewsets.ModelViewSet):
 
     serializer_class = AgentConversationSerializer
 
+    def get_serializer_class(self):
+        """Use detail serializer for retrieve action to include messages."""
+        if self.action == "retrieve":
+            return AgentConversationDetailSerializer
+        return AgentConversationSerializer
+
     def get_queryset(self):
-        """Filter conversations by user or anonymous session."""
+        """Filter conversations by user or anonymous session, and optionally by agent_key."""
         if self.request.user and self.request.user.is_authenticated:
-            return AgentConversation.objects.filter(user=self.request.user)
+            queryset = AgentConversation.objects.filter(user=self.request.user)
+        else:
+            # For anonymous sessions, filter by anonymous_session_id
+            session = get_anonymous_session(self.request)
+            if session:
+                queryset = AgentConversation.objects.filter(anonymous_session_id=session.id)
+            else:
+                return AgentConversation.objects.none()
 
-        # For anonymous sessions, filter by anonymous_session_id
-        session = get_anonymous_session(self.request)
-        if session:
-            return AgentConversation.objects.filter(anonymous_session_id=session.id)
+        # Filter by agent_key if provided
+        agent_key = self.request.query_params.get("agent_key")
+        if agent_key:
+            queryset = queryset.filter(agent_key=agent_key)
 
-        return AgentConversation.objects.none()
+        return queryset.order_by("-updated_at")
 
     def perform_create(self, serializer):
         """Set user or anonymous session on creation."""
@@ -137,10 +151,12 @@ class BaseAgentRunViewSet(viewsets.ModelViewSet):
                 )
 
         # Get or create conversation
+        # Conversations are always created - this enables conversation history by default
         conversation = None
         session = get_anonymous_session(request)
 
         if data.get("conversation_id"):
+            # Try to get existing conversation
             try:
                 if request.user and request.user.is_authenticated:
                     conversation = AgentConversation.objects.get(
@@ -157,6 +173,16 @@ class BaseAgentRunViewSet(viewsets.ModelViewSet):
                     {"error": "Conversation not found"},
                     status=status.HTTP_404_NOT_FOUND,
                 )
+        else:
+            # Auto-create a new conversation
+            # This ensures conversation history works by default
+            conversation = AgentConversation.objects.create(
+                agent_key=data["agent_key"],
+                user=request.user if request.user and request.user.is_authenticated else None,
+                anonymous_session_id=session.id if session else None,
+                title="",  # Will be updated later based on first message
+                metadata=data.get("metadata", {}),
+            )
 
         # Check idempotency
         if data.get("idempotency_key"):

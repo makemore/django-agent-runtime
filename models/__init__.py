@@ -39,6 +39,9 @@ from django_agent_runtime.models.definitions import (
     AgentVersion,
     AgentTool,
     AgentKnowledge,
+    DiscoveredFunction,
+    DynamicTool,
+    DynamicToolExecution,
 )
 
 # Import step execution models
@@ -72,6 +75,10 @@ __all__ = [
     "AgentVersion",
     "AgentTool",
     "AgentKnowledge",
+    # Dynamic Tool models
+    "DiscoveredFunction",
+    "DynamicTool",
+    "DynamicToolExecution",
     # Step execution models
     "StepCheckpoint",
     "StepEvent",

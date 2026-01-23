@@ -330,7 +330,7 @@ class AgentRunner:
     ) -> RunContextImpl:
         """Build the run context."""
         input_data = queued_run.input
-        messages = input_data.get("messages", [])
+        new_messages = input_data.get("messages", [])
         params = input_data.get("params", {})
 
         # Get conversation_id from metadata
@@ -338,8 +338,26 @@ class AgentRunner:
         if conversation_id:
             conversation_id = UUID(conversation_id) if isinstance(conversation_id, str) else conversation_id
 
-        # Build tool registry (could be customized per agent)
+        # Load conversation history if enabled and we have a conversation
+        messages = await self._load_conversation_history(
+            conversation_id, new_messages, queued_run.run_id
+        )
+
+        # Build tool registry - load from database if agent_key is available
         tool_registry = ToolRegistry()
+        agent_key = queued_run.agent_key
+        if agent_key:
+            try:
+                from django_agent_runtime.dynamic_tools import load_agent_tools
+                user_id = queued_run.metadata.get("user_id")
+                tool_registry = await load_agent_tools(
+                    agent_slug=agent_key,
+                    agent_run_id=queued_run.run_id,
+                    user_id=user_id,
+                )
+                logger.debug(f"Loaded {len(tool_registry.list_tools())} tools for agent {agent_key}")
+            except Exception as e:
+                logger.warning(f"Failed to load tools for agent {agent_key}: {e}")
 
         # Get next sequence number
         seq = await self.event_bus.get_next_seq(queued_run.run_id)
@@ -356,6 +374,79 @@ class AgentRunner:
             _worker_id=self.worker_id,
             _seq=seq,
         )
+
+    async def _load_conversation_history(
+        self,
+        conversation_id: Optional[UUID],
+        new_messages: list[Message],
+        current_run_id: UUID,
+    ) -> list[Message]:
+        """
+        Load conversation history and prepend to new messages.
+
+        This enables multi-turn conversations by default. When a run is part of
+        a conversation, previous messages from that conversation are automatically
+        included in the context.
+
+        Args:
+            conversation_id: The conversation ID (if any)
+            new_messages: The new messages for this run
+            current_run_id: The current run ID (to exclude from history)
+
+        Returns:
+            Combined list of history + new messages
+        """
+        # Check if conversation history is enabled
+        if not self.settings.INCLUDE_CONVERSATION_HISTORY:
+            debug_print("Conversation history disabled by settings")
+            return new_messages
+
+        if not conversation_id:
+            debug_print("No conversation_id, skipping history load")
+            return new_messages
+
+        try:
+            # Import here to avoid circular imports
+            from django_agent_runtime.models import AgentConversation
+            from asgiref.sync import sync_to_async
+
+            # Get the conversation
+            try:
+                conversation = await sync_to_async(
+                    AgentConversation.objects.get
+                )(id=conversation_id)
+            except AgentConversation.DoesNotExist:
+                debug_print(f"Conversation {conversation_id} not found")
+                return new_messages
+
+            # Get message history from previous runs (excluding current run)
+            # This uses the model's get_message_history method which handles
+            # deduplication and proper ordering
+            history = await sync_to_async(
+                lambda: conversation.get_message_history(include_failed_runs=False)
+            )()
+
+            if not history:
+                debug_print("No conversation history found")
+                return new_messages
+
+            # Apply message limit if configured
+            max_messages = self.settings.MAX_HISTORY_MESSAGES
+            if max_messages and len(history) > max_messages:
+                debug_print(f"Limiting history from {len(history)} to {max_messages} messages")
+                history = history[-max_messages:]
+
+            debug_print(f"Loaded {len(history)} history messages for conversation {conversation_id}")
+
+            # Combine history with new messages
+            # History comes first, then new messages
+            return history + new_messages
+
+        except Exception as e:
+            logger.warning(f"Failed to load conversation history: {e}")
+            debug_print(f"Error loading history: {e}")
+            # Fall back to just new messages on error
+            return new_messages
 
     async def _heartbeat_loop(self, run_id: UUID, ctx: RunContextImpl) -> None:
         """Send periodic heartbeats to extend lease."""
@@ -406,6 +497,14 @@ class AgentRunner:
             output=output,
         )
 
+        # Generate conversation title if this is the first run
+        if ctx.conversation_id and self.settings.AUTO_GENERATE_CONVERSATION_TITLE:
+            await self._maybe_generate_conversation_title(
+                ctx.conversation_id,
+                ctx.input_messages,
+                result.final_messages,
+            )
+
         # Call completion hook if configured
         await self._call_completion_hook(run_id, output)
 
@@ -427,6 +526,141 @@ class AgentRunner:
                 print(f"[agent-runner] Error in completion hook for run {run_id} (debug mode - re-raising): {e}", flush=True)
                 raise
             print(f"[agent-runner] Error in completion hook for run {run_id}: {e}", flush=True)
+
+    async def _maybe_generate_conversation_title(
+        self,
+        conversation_id: UUID,
+        input_messages: list[Message],
+        final_messages: list[Message],
+    ) -> None:
+        """
+        Generate a title for the conversation if it doesn't have one.
+
+        Only generates a title for the first successful run in a conversation.
+        Uses a fast/cheap model to generate a short, descriptive title.
+        """
+        from asgiref.sync import sync_to_async
+        from django_agent_runtime.models import AgentConversation
+
+        try:
+            # Check if conversation already has a title
+            conversation = await sync_to_async(
+                AgentConversation.objects.get
+            )(id=conversation_id)
+
+            if conversation.title:
+                # Already has a title, skip
+                debug_print(f"Conversation {conversation_id} already has title: {conversation.title}")
+                return
+
+            # Check if this is the first run (no other successful runs)
+            run_count = await sync_to_async(
+                lambda: conversation.runs.filter(status="succeeded").count()
+            )()
+
+            if run_count > 1:
+                # Not the first run, skip
+                debug_print(f"Conversation {conversation_id} has {run_count} runs, skipping title generation")
+                return
+
+            # Extract user message and assistant response for title generation
+            user_message = None
+            assistant_message = None
+
+            for msg in input_messages:
+                if msg.get("role") == "user":
+                    user_message = msg.get("content", "")
+                    break
+
+            for msg in final_messages:
+                if msg.get("role") == "assistant":
+                    content = msg.get("content", "")
+                    if content:
+                        assistant_message = content
+                        break
+
+            if not user_message:
+                debug_print("No user message found, skipping title generation")
+                return
+
+            # Generate title using LLM
+            title = await self._generate_title(user_message, assistant_message)
+
+            if title:
+                # Update conversation title
+                await sync_to_async(
+                    lambda: AgentConversation.objects.filter(id=conversation_id).update(title=title)
+                )()
+                debug_print(f"Generated title for conversation {conversation_id}: {title}")
+
+        except AgentConversation.DoesNotExist:
+            debug_print(f"Conversation {conversation_id} not found for title generation")
+        except Exception as e:
+            # Don't fail the run if title generation fails
+            print(f"[agent-runner] Error generating conversation title: {e}", flush=True)
+
+    async def _generate_title(
+        self,
+        user_message: str,
+        assistant_message: Optional[str] = None,
+    ) -> Optional[str]:
+        """
+        Generate a short title for a conversation using LLM.
+
+        Args:
+            user_message: The first user message
+            assistant_message: The first assistant response (optional)
+
+        Returns:
+            A short title (max ~50 chars) or None if generation fails
+        """
+        from django_agent_runtime.runtime.llm import get_llm_client
+
+        try:
+            # Build prompt for title generation
+            context = f"User: {user_message[:500]}"  # Limit to avoid huge prompts
+            if assistant_message:
+                context += f"\n\nAssistant: {assistant_message[:500]}"
+
+            messages = [
+                {
+                    "role": "system",
+                    "content": (
+                        "Generate a very short, descriptive title (3-6 words, max 50 characters) "
+                        "for this conversation. The title should capture the main topic or intent. "
+                        "Respond with ONLY the title, no quotes, no punctuation at the end."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": context,
+                },
+            ]
+
+            # Use a fast/cheap model for title generation (OpenAI gpt-4o-mini by default)
+            llm = get_llm_client(provider="openai")
+            response = await llm.generate(
+                messages=messages,
+                model=self.settings.TITLE_GENERATION_MODEL,
+                max_tokens=50,
+                temperature=0.7,
+            )
+
+            title = response.message.get("content", "").strip()
+
+            # Clean up the title
+            title = title.strip('"\'')  # Remove quotes if present
+            title = title.rstrip('.')   # Remove trailing period
+
+            # Truncate if too long
+            if len(title) > 100:
+                title = title[:97] + "..."
+
+            return title if title else None
+
+        except Exception as e:
+            print(f"[agent-runner] Error calling LLM for title generation: {e}", flush=True)
+            return None
 
     async def _handle_timeout(self, run_id: UUID, ctx: RunContextImpl) -> None:
         """Handle run timeout."""
