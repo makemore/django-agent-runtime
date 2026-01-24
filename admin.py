@@ -12,8 +12,29 @@ from django_agent_runtime.models import (
     AgentCheckpoint,
     AgentDefinition,
     AgentVersion,
+    AgentRevision,
     AgentTool,
     AgentKnowledge,
+    # Dynamic Tool models
+    DiscoveredFunction,
+    DynamicTool,
+    DynamicToolExecution,
+    SubAgentTool,
+    # Multi-agent system models
+    AgentSystem,
+    AgentSystemMember,
+    AgentSystemVersion,
+    AgentSystemSnapshot,
+    # Persistence models
+    Memory,
+    PersistenceConversation,
+    PersistenceMessage,
+    PersistenceTaskList,
+    PersistenceTask,
+    Preferences,
+    # Step execution models
+    StepCheckpoint,
+    StepEvent,
 )
 
 
@@ -300,3 +321,279 @@ class AgentKnowledgeAdmin(admin.ModelAdmin):
         }),
     )
 
+
+
+# =============================================================================
+# Agent Revision Admin
+# =============================================================================
+
+
+@admin.register(AgentRevision)
+class AgentRevisionAdmin(admin.ModelAdmin):
+    """Admin for AgentRevision - immutable snapshots of agent configuration."""
+
+    list_display = ["agent", "revision_number", "created_at", "created_by"]
+    list_filter = ["created_at"]
+    search_fields = ["agent__name", "agent__slug"]
+    readonly_fields = ["id", "agent", "revision_number", "content", "created_at", "created_by"]
+    raw_id_fields = ["agent", "created_by"]
+
+    def has_change_permission(self, request, obj=None):
+        return False  # Revisions are immutable
+
+    def has_delete_permission(self, request, obj=None):
+        # Allow superusers to delete (needed for cascade deletes from AgentDefinition)
+        return request.user.is_superuser
+
+
+# =============================================================================
+# Multi-Agent System Admin
+# =============================================================================
+
+
+class AgentSystemMemberInline(admin.TabularInline):
+    """Inline for viewing members of a system."""
+
+    model = AgentSystemMember
+    extra = 1
+    fields = ["agent", "role", "notes", "order"]
+    raw_id_fields = ["agent"]
+
+
+class AgentSystemVersionInline(admin.TabularInline):
+    """Inline for viewing versions of a system."""
+
+    model = AgentSystemVersion
+    extra = 0
+    fields = ["version", "is_active", "is_draft", "created_at"]
+    readonly_fields = ["created_at"]
+    show_change_link = True
+
+
+@admin.register(AgentSystem)
+class AgentSystemAdmin(admin.ModelAdmin):
+    """Admin for AgentSystem - multi-agent systems."""
+
+    list_display = ["name", "slug", "entry_agent", "member_count", "is_active", "updated_at"]
+    list_filter = ["is_active", "created_at"]
+    search_fields = ["name", "slug", "description"]
+    readonly_fields = ["id", "created_at", "updated_at"]
+    raw_id_fields = ["owner", "entry_agent"]
+    prepopulated_fields = {"slug": ("name",)}
+    inlines = [AgentSystemMemberInline, AgentSystemVersionInline]
+
+    fieldsets = (
+        (None, {
+            "fields": ("id", "name", "slug", "description")
+        }),
+        ("Configuration", {
+            "fields": ("entry_agent",),
+        }),
+        ("Ownership", {
+            "fields": ("owner", "is_active"),
+        }),
+        ("Timestamps", {
+            "fields": ("created_at", "updated_at"),
+        }),
+    )
+
+    def member_count(self, obj):
+        return obj.members.count()
+    member_count.short_description = "Members"
+
+
+@admin.register(AgentSystemMember)
+class AgentSystemMemberAdmin(admin.ModelAdmin):
+    """Admin for AgentSystemMember."""
+
+    list_display = ["system", "agent", "role", "order"]
+    list_filter = ["role", "system"]
+    search_fields = ["system__name", "agent__name"]
+    raw_id_fields = ["system", "agent"]
+
+
+class AgentSystemSnapshotInline(admin.TabularInline):
+    """Inline for viewing snapshots in a system version."""
+
+    model = AgentSystemSnapshot
+    extra = 0
+    fields = ["agent", "pinned_revision"]
+    raw_id_fields = ["agent", "pinned_revision"]
+
+
+@admin.register(AgentSystemVersion)
+class AgentSystemVersionAdmin(admin.ModelAdmin):
+    """Admin for AgentSystemVersion."""
+
+    list_display = ["system", "version", "is_active", "is_draft", "created_at"]
+    list_filter = ["is_active", "is_draft", "created_at"]
+    search_fields = ["system__name", "version"]
+    readonly_fields = ["id", "created_at", "published_at"]
+    raw_id_fields = ["system", "created_by"]
+    inlines = [AgentSystemSnapshotInline]
+
+    fieldsets = (
+        (None, {
+            "fields": ("id", "system", "version", "is_active", "is_draft")
+        }),
+        ("Publishing", {
+            "fields": ("notes", "published_at", "created_by"),
+        }),
+        ("Timestamps", {
+            "fields": ("created_at",),
+        }),
+    )
+
+
+@admin.register(AgentSystemSnapshot)
+class AgentSystemSnapshotAdmin(admin.ModelAdmin):
+    """Admin for AgentSystemSnapshot."""
+
+    list_display = ["system_version", "agent", "pinned_revision"]
+    search_fields = ["system_version__system__name", "agent__name"]
+    raw_id_fields = ["system_version", "agent", "pinned_revision"]
+
+
+# =============================================================================
+# Dynamic Tool Admin
+# =============================================================================
+
+
+@admin.register(DiscoveredFunction)
+class DiscoveredFunctionAdmin(admin.ModelAdmin):
+    """Admin for DiscoveredFunction - functions discovered from code."""
+
+    list_display = ["name", "module_path", "function_type", "is_selected", "discovered_at"]
+    list_filter = ["function_type", "is_selected", "discovered_at"]
+    search_fields = ["name", "module_path", "docstring"]
+    readonly_fields = ["id", "discovered_at"]
+
+
+@admin.register(DynamicTool)
+class DynamicToolAdmin(admin.ModelAdmin):
+    """Admin for DynamicTool - dynamically created tools."""
+
+    list_display = ["name", "agent", "is_active", "created_at"]
+    list_filter = ["is_active", "created_at"]
+    search_fields = ["name", "description"]
+    readonly_fields = ["id", "created_at", "updated_at"]
+    raw_id_fields = ["agent"]
+
+
+@admin.register(DynamicToolExecution)
+class DynamicToolExecutionAdmin(admin.ModelAdmin):
+    """Admin for DynamicToolExecution - execution logs."""
+
+    list_display = ["tool", "agent_run_id", "status", "started_at", "duration_ms"]
+    list_filter = ["status", "started_at"]
+    search_fields = ["tool__name"]
+    readonly_fields = ["id", "tool", "agent_run_id", "input_arguments", "output_result", "error_message", "started_at", "completed_at"]
+    raw_id_fields = ["tool", "executed_by"]
+
+
+@admin.register(SubAgentTool)
+class SubAgentToolAdmin(admin.ModelAdmin):
+    """Admin for SubAgentTool - sub-agent tool configurations."""
+
+    list_display = ["name", "parent_agent", "sub_agent", "context_mode", "is_active"]
+    list_filter = ["context_mode", "is_active"]
+    search_fields = ["name", "parent_agent__name", "sub_agent__name"]
+    raw_id_fields = ["parent_agent", "sub_agent"]
+
+
+# =============================================================================
+# Persistence Model Admin
+# =============================================================================
+
+
+@admin.register(Memory)
+class MemoryAdmin(admin.ModelAdmin):
+    """Admin for Memory - agent memory storage."""
+
+    list_display = ["id", "key", "user", "created_at"]
+    list_filter = ["created_at"]
+    search_fields = ["key"]
+    readonly_fields = ["id", "created_at", "updated_at"]
+    raw_id_fields = ["user"]
+
+
+@admin.register(PersistenceConversation)
+class PersistenceConversationAdmin(admin.ModelAdmin):
+    """Admin for PersistenceConversation."""
+
+    list_display = ["id", "agent_key", "user", "title", "created_at"]
+    list_filter = ["agent_key", "created_at"]
+    search_fields = ["title", "agent_key"]
+    readonly_fields = ["id", "created_at", "updated_at"]
+    raw_id_fields = ["user"]
+
+
+@admin.register(PersistenceMessage)
+class PersistenceMessageAdmin(admin.ModelAdmin):
+    """Admin for PersistenceMessage."""
+
+    list_display = ["id", "conversation", "role", "timestamp"]
+    list_filter = ["role", "timestamp"]
+    search_fields = ["content"]
+    readonly_fields = ["id", "timestamp"]
+    raw_id_fields = ["conversation"]
+
+
+@admin.register(PersistenceTaskList)
+class PersistenceTaskListAdmin(admin.ModelAdmin):
+    """Admin for PersistenceTaskList."""
+
+    list_display = ["id", "name", "user", "run_id", "created_at"]
+    list_filter = ["created_at"]
+    search_fields = ["name"]
+    readonly_fields = ["id", "created_at", "updated_at"]
+    raw_id_fields = ["user"]
+
+
+@admin.register(PersistenceTask)
+class PersistenceTaskAdmin(admin.ModelAdmin):
+    """Admin for PersistenceTask."""
+
+    list_display = ["id", "task_list", "name", "state", "priority"]
+    list_filter = ["state"]
+    search_fields = ["name", "description"]
+    readonly_fields = ["id", "created_at", "updated_at"]
+    raw_id_fields = ["task_list"]
+
+
+@admin.register(Preferences)
+class PreferencesAdmin(admin.ModelAdmin):
+    """Admin for Preferences - user/agent preferences."""
+
+    list_display = ["id", "key", "user", "updated_at"]
+    list_filter = ["updated_at"]
+    search_fields = ["key"]
+    readonly_fields = ["id", "created_at", "updated_at"]
+    raw_id_fields = ["user"]
+
+
+# =============================================================================
+# Step Execution Admin
+# =============================================================================
+
+
+@admin.register(StepCheckpoint)
+class StepCheckpointAdmin(admin.ModelAdmin):
+    """Admin for StepCheckpoint - step execution checkpoints."""
+
+    list_display = ["id", "run_id", "checkpoint_key", "status", "started_at"]
+    list_filter = ["status", "started_at"]
+    search_fields = ["checkpoint_key", "run_id"]
+    readonly_fields = ["id", "started_at"]
+    raw_id_fields = ["user"]
+
+
+@admin.register(StepEvent)
+class StepEventAdmin(admin.ModelAdmin):
+    """Admin for StepEvent - step execution events."""
+
+    list_display = ["id", "checkpoint", "event_type", "timestamp"]
+    list_filter = ["event_type", "timestamp"]
+    search_fields = ["checkpoint__step_name"]
+    readonly_fields = ["id", "timestamp"]
+    raw_id_fields = ["checkpoint"]

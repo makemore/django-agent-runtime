@@ -30,7 +30,7 @@ from django_agent_runtime.runtime.interfaces import (
     ToolRegistry,
     ErrorInfo,
 )
-from django_agent_runtime.runtime.registry import get_runtime
+from django_agent_runtime.runtime.registry import get_runtime_async
 from django_agent_runtime.runtime.queue.base import RunQueue, QueuedRun
 from django_agent_runtime.runtime.events.base import EventBus, Event
 
@@ -71,6 +71,9 @@ class RunContextImpl:
     _last_cancel_check: float = field(default=0.0, repr=False)
     _is_cancelled: bool = field(default=False, repr=False)
 
+    # In-memory state dict for the current run (not persisted)
+    state: dict = field(default_factory=dict, repr=False)
+
     async def emit(self, event_type: EventType | str, payload: dict) -> None:
         """Emit an event to the event bus."""
         event_type_str = event_type.value if isinstance(event_type, EventType) else event_type
@@ -98,7 +101,9 @@ class RunContextImpl:
             content = str(payload.get("content", ""))[:80]
             detail = f" -> {content}{'...' if len(str(payload.get('content', ''))) > 80 else ''}"
 
-        debug_print(f"Emitting event: type={event_type_str}, seq={self._seq}, visible={ui_visible}{detail}")
+        # Include short run ID for easier debugging of concurrent runs
+        short_id = str(self.run_id)[:8]
+        debug_print(f"[{short_id}] Emitting event: type={event_type_str}, seq={self._seq}, visible={ui_visible}{detail}")
         await self._event_bus.publish(event)
         self._seq += 1
 
@@ -235,7 +240,7 @@ class AgentRunner:
         try:
             # Get the runtime
             debug_print(f"Getting runtime for agent_key={agent_key}")
-            runtime = get_runtime(agent_key)
+            runtime = await get_runtime_async(agent_key)
             debug_print(f"Got runtime: {runtime.__class__.__name__}")
 
             # Build context

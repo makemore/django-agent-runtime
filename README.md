@@ -11,6 +11,9 @@ A production-ready Django app for AI agent execution. Provides everything you ne
 
 | Version | Date | Changes |
 |---------|------|---------|
+| **0.5.0** | 2026-01-24 | RAG module, pgvector integration, multi-agent support, database runtime, models config |
+| **0.4.1** | 2026-01-23 | Dynamic tools system, conversation history API |
+| **0.4.0** | 2026-01-22 | Step execution module, agent definition models |
 | **0.3.12** | 2026-01-22 | Debug/production mode configuration - control exception handling behavior |
 | **0.3.11** | 2025-01-19 | Add Full Stack Setup Guide for AI agents |
 | **0.3.10** | 2025-01-15 | SSE named events for addEventListener support, flexible registry path format |
@@ -625,6 +628,117 @@ In debug mode:
 
 This is useful during development to quickly identify and fix issues.
 
+## Multi-Agent Systems
+
+django-agent-runtime supports multi-agent systems where agents can invoke other agents as tools. This enables router/dispatcher patterns, hierarchical agent systems, and specialist delegation.
+
+### Overview
+
+The multi-agent pattern uses `agent-runtime-core`'s `multi_agent` module. Key concepts:
+
+- **Agent Tools**: Wrap any agent as a tool callable by other agents
+- **Invocation Modes**: `DELEGATE` (return result to parent) or `HANDOFF` (transfer control)
+- **Context Modes**: Control how much conversation history is passed to sub-agents
+
+For full documentation, see the [agent-runtime-core Multi-Agent Systems documentation](https://github.com/makemore/agent-runtime-core#multi-agent-systems).
+
+### Quick Example
+
+```python
+# myapp/agents.py
+from django_agent_runtime.runtime.interfaces import AgentRuntime, RunContext, RunResult, EventType
+from django_agent_runtime.runtime.registry import register_runtime
+from django_agent_runtime.runtime.llm import get_llm_client
+from agent_runtime_core.multi_agent import (
+    AgentTool,
+    InvocationMode,
+    ContextMode,
+    register_agent_tools,
+)
+from agent_runtime_core.interfaces import ToolRegistry
+
+
+class BillingAgent(AgentRuntime):
+    """Specialist agent for billing questions."""
+
+    @property
+    def key(self) -> str:
+        return "billing-specialist"
+
+    async def run(self, ctx: RunContext) -> RunResult:
+        llm = get_llm_client()
+        response = await llm.generate([
+            {"role": "system", "content": "You are a billing specialist. Help with refunds, payments, and invoices."},
+            *ctx.input_messages,
+        ])
+        await ctx.emit(EventType.ASSISTANT_MESSAGE, {"content": response.message["content"]})
+        return RunResult(final_output={"response": response.message["content"]})
+
+
+class RouterAgent(AgentRuntime):
+    """Routes requests to specialist agents."""
+
+    def __init__(self):
+        self.billing_agent = BillingAgent()
+        self.agent_tools = [
+            AgentTool(
+                agent=self.billing_agent,
+                name="billing_specialist",
+                description="Handles billing questions, refunds, and payment issues",
+                invocation_mode=InvocationMode.DELEGATE,
+                context_mode=ContextMode.FULL,
+            ),
+        ]
+
+    @property
+    def key(self) -> str:
+        return "customer-router"
+
+    async def run(self, ctx: RunContext) -> RunResult:
+        llm = get_llm_client()
+        tools = ToolRegistry()
+        messages = list(ctx.input_messages)
+
+        # Register agent-tools
+        register_agent_tools(
+            registry=tools,
+            agent_tools=self.agent_tools,
+            get_conversation_history=lambda: messages,
+            parent_ctx=ctx,
+        )
+
+        # Router logic with tool calling...
+        response = await llm.generate(
+            [{"role": "system", "content": "Route to specialists or answer directly."}] + messages,
+            tools=tools.to_openai_format(),
+        )
+
+        # Handle tool calls and responses...
+        return RunResult(final_output={"response": response.message["content"]})
+
+
+def register_agents():
+    register_runtime(BillingAgent())
+    register_runtime(RouterAgent())
+```
+
+### Events
+
+Multi-agent invocations emit events with additional metadata:
+
+```json
+{
+    "event_type": "tool.call",
+    "payload": {
+        "tool": "billing_specialist",
+        "is_agent_tool": true,
+        "sub_agent_key": "billing-specialist"
+    }
+}
+```
+
+Sub-agent events include `parent_run_id` and `sub_agent_run_id` for tracing.
+
 ## Configuration Reference
 
 | Setting | Type | Default | Description |
@@ -795,77 +909,49 @@ class MyAgent(AgentRuntime):
         ...
 ```
 
-### Option 2: agent_runtime_framework (Journey-Based)
+### Option 2: ToolCallingAgent (Tool-Based)
 
-Best for multi-step conversational flows with state management:
-
-```bash
-pip install agent_runtime_framework
-```
+Best for agents that use tools with automatic tool-calling loop:
 
 ```python
-from agent_runtime_framework.adapters import DjangoRuntimeAdapter
-from agent_runtime_framework import BaseJourneyState, BaseJourneyTools, ToolSchema
-from enum import Enum
+from agent_runtime_core import ToolCallingAgent, ToolRegistry, Tool
 
-class QuoteStep(str, Enum):
-    WELCOME = "welcome"
-    COLLECT_INFO = "collect_info"
-    GENERATE_QUOTE = "generate_quote"
-    COMPLETE = "complete"
-
-class QuoteState(BaseJourneyState[QuoteStep]):
-    step: QuoteStep = QuoteStep.WELCOME
-    customer_name: str = ""
-    coverage_type: str = ""
-    # ... state fields
-
-class QuoteTools(BaseJourneyTools[QuoteState]):
-    async def save_customer_info(self, name: str, coverage: str) -> str:
-        self.state.customer_name = name
-        self.state.coverage_type = coverage
-        self.state.step = QuoteStep.GENERATE_QUOTE
-        await self._notify_state_change()
-        return f"Got it, {name}! Generating your {coverage} quote..."
-
-class QuoteAgent(DjangoRuntimeAdapter[QuoteState, QuoteTools, QuoteStep]):
+class WeatherAgent(ToolCallingAgent):
     @property
     def key(self) -> str:
-        return "quote-agent"
+        return "weather-agent"
 
-    def get_initial_state(self) -> QuoteState:
-        return QuoteState()
+    @property
+    def system_prompt(self) -> str:
+        return "You are a helpful weather assistant. Use the get_weather tool to answer questions."
 
-    def get_system_prompt(self, state: QuoteState) -> str:
-        prompts = {
-            QuoteStep.WELCOME: "Welcome the user and ask what coverage they need.",
-            QuoteStep.COLLECT_INFO: "Collect customer name and coverage type.",
-            # ...
-        }
-        return prompts[state.step]
+    @property
+    def tools(self) -> ToolRegistry:
+        registry = ToolRegistry()
+        registry.register(Tool(
+            name="get_weather",
+            description="Get the current weather for a location",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "location": {"type": "string", "description": "City name"},
+                },
+                "required": ["location"],
+            },
+            handler=self._get_weather,
+        ))
+        return registry
 
-    def get_tool_schemas(self, state: QuoteState) -> list[ToolSchema]:
-        # Return different tools based on current step
-        ...
-
-    def create_tools(self, state, ctx, backend_client) -> QuoteTools:
-        return QuoteTools(state=state)
-
-    async def execute_tool(self, tools, name: str, arguments: dict) -> str:
-        return await getattr(tools, name)(**arguments)
+    async def _get_weather(self, location: str) -> str:
+        # Your weather API call here
+        return f"The weather in {location} is sunny, 72°F"
 
 # Register with django-agent-runtime
 from django_agent_runtime.runtime.registry import register_runtime
-register_runtime(QuoteAgent())
+register_runtime(WeatherAgent())
 ```
 
-The adapter handles:
-- Converting Django's `RunContext` to framework's `AgentContext`
-- State persistence via Django's checkpoint system
-- Event emission through Django's event bus
-- Returning results in Django's `RunResult` format
-
-See [agent_runtime_framework](https://github.com/makemore/agent-runtime-framework) for full documentation.
+`ToolCallingAgent` handles the tool-calling loop automatically - just define your system prompt and tools.
 
 ### Option 3: OpenAI Agents SDK
 

@@ -37,11 +37,19 @@ from django_agent_runtime.persistence.models import (
 from django_agent_runtime.models.definitions import (
     AgentDefinition,
     AgentVersion,
+    AgentRevision,
     AgentTool,
     AgentKnowledge,
     DiscoveredFunction,
     DynamicTool,
     DynamicToolExecution,
+    # Sub-agent tool model
+    SubAgentTool,
+    # Multi-agent system models
+    AgentSystem,
+    AgentSystemMember,
+    AgentSystemVersion,
+    AgentSystemSnapshot,
 )
 
 # Import step execution models
@@ -73,12 +81,20 @@ __all__ = [
     # Agent Definition models
     "AgentDefinition",
     "AgentVersion",
+    "AgentRevision",
     "AgentTool",
     "AgentKnowledge",
     # Dynamic Tool models
     "DiscoveredFunction",
     "DynamicTool",
     "DynamicToolExecution",
+    # Sub-agent tool model
+    "SubAgentTool",
+    # Multi-agent system models
+    "AgentSystem",
+    "AgentSystemMember",
+    "AgentSystemVersion",
+    "AgentSystemSnapshot",
     # Step execution models
     "StepCheckpoint",
     "StepEvent",

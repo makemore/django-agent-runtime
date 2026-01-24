@@ -5,18 +5,18 @@ Tests for django_agent_runtime LLM client implementations.
 import pytest
 from unittest.mock import patch, AsyncMock, MagicMock
 
-from django_agent_runtime.runtime.llm import get_llm_client
-from django_agent_runtime.runtime.llm.openai import OpenAIClient
+from django_agent_runtime.runtime.llm import get_llm_client, OpenAIClient
 from django_agent_runtime.runtime.interfaces import LLMResponse
 
 
 class TestOpenAIClient:
     """Tests for OpenAIClient."""
-    
+
     @pytest.fixture
     def mock_openai(self):
         """Create a mock OpenAI client."""
-        with patch("django_agent_runtime.runtime.llm.openai.AsyncOpenAI") as mock:
+        # Now OpenAIClient is imported from agent_runtime_core
+        with patch("agent_runtime_core.llm.openai.AsyncOpenAI") as mock:
             mock_instance = MagicMock()
             mock.return_value = mock_instance
             

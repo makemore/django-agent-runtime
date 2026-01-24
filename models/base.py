@@ -183,8 +183,10 @@ class AbstractAgentConversation(models.Model):
                 # Create a hash to detect duplicates
                 msg_hash = _message_hash(msg)
                 if msg_hash not in seen_message_hashes:
-                    messages.append(_normalize_message(msg))
-                    seen_message_hashes.add(msg_hash)
+                    normalized = _normalize_message(msg)
+                    if normalized is not None:
+                        messages.append(normalized)
+                        seen_message_hashes.add(msg_hash)
 
             # Get output messages (assistant responses, tool calls, etc.)
             output_data = run.output or {}
@@ -193,8 +195,10 @@ class AbstractAgentConversation(models.Model):
             for msg in output_messages:
                 msg_hash = _message_hash(msg)
                 if msg_hash not in seen_message_hashes:
-                    messages.append(_normalize_message(msg))
-                    seen_message_hashes.add(msg_hash)
+                    normalized = _normalize_message(msg)
+                    if normalized is not None:
+                        messages.append(normalized)
+                        seen_message_hashes.add(msg_hash)
 
         return messages
 
@@ -231,18 +235,39 @@ def _message_hash(msg: dict) -> str:
     return hashlib.md5(key.encode()).hexdigest()
 
 
-def _normalize_message(msg: dict) -> dict:
+def _normalize_message(msg: dict) -> dict | None:
     """
     Normalize a message to the framework-neutral Message format.
 
     Ensures consistent structure regardless of how it was stored.
+    Returns None for messages that should be filtered out (e.g., empty content
+    without tool_calls).
     """
+    role = msg.get("role", "user")
+    content = msg.get("content")
+    tool_calls = msg.get("tool_calls")
+    tool_call_id = msg.get("tool_call_id")
+
+    # Skip messages with empty/None content unless they have tool_calls or are tool results
+    # Anthropic requires non-empty content for all messages except:
+    # - Assistant messages with tool_calls (content can be empty)
+    # - The final assistant message (content can be empty)
+    if not content and content != 0:  # Allow 0 as valid content
+        # Assistant messages with tool_calls are valid even without content
+        if role == "assistant" and tool_calls:
+            pass  # Allow through
+        # Tool messages need tool_call_id, content can be empty result
+        elif role == "tool" and tool_call_id:
+            content = content if content else ""  # Ensure string, not None
+        else:
+            # Skip user/system messages with empty content
+            return None
+
     normalized = {
-        "role": msg.get("role", "user"),
+        "role": role,
     }
 
     # Handle content (can be string, dict, or list)
-    content = msg.get("content")
     if content is not None:
         normalized["content"] = content
 
@@ -250,11 +275,11 @@ def _normalize_message(msg: dict) -> dict:
     if msg.get("name"):
         normalized["name"] = msg["name"]
 
-    if msg.get("tool_call_id"):
-        normalized["tool_call_id"] = msg["tool_call_id"]
+    if tool_call_id:
+        normalized["tool_call_id"] = tool_call_id
 
-    if msg.get("tool_calls"):
-        normalized["tool_calls"] = msg["tool_calls"]
+    if tool_calls:
+        normalized["tool_calls"] = tool_calls
 
     if msg.get("metadata"):
         normalized["metadata"] = msg["metadata"]

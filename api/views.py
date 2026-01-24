@@ -33,6 +33,7 @@ from django_agent_runtime.api.serializers import (
 )
 from django_agent_runtime.api.permissions import get_anonymous_session
 from django_agent_runtime.conf import runtime_settings, get_hook
+from django_agent_runtime.runtime.llm import list_models_for_ui, DEFAULT_MODEL
 
 
 class BaseAgentConversationViewSet(viewsets.ModelViewSet):
@@ -496,3 +497,19 @@ async def async_event_stream(request, run_id: str):
     response["Cache-Control"] = "no-cache"
     response["X-Accel-Buffering"] = "no"
     return response
+
+
+class BaseModelsViewSet(viewsets.ViewSet):
+    """
+    ViewSet for listing available LLM models.
+
+    Provides a list of supported models that can be used in the model selector UI.
+    """
+
+    def list(self, request):
+        """List all available models."""
+        models = list_models_for_ui()
+        return Response({
+            "models": models,
+            "default": DEFAULT_MODEL,
+        })

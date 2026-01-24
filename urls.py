@@ -20,6 +20,7 @@ from rest_framework.routers import DefaultRouter
 from django_agent_runtime.api.views import (
     BaseAgentConversationViewSet,
     BaseAgentRunViewSet,
+    BaseModelsViewSet,
     sync_event_stream,
 )
 
@@ -29,6 +30,7 @@ app_name = "django_agent_runtime"
 router = DefaultRouter()
 router.register(r"conversations", BaseAgentConversationViewSet, basename="conversation")
 router.register(r"runs", BaseAgentRunViewSet, basename="run")
+router.register(r"models", BaseModelsViewSet, basename="models")
 
 urlpatterns = [
     # ViewSet routes

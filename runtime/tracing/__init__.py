@@ -1,14 +1,20 @@
 """
-Tracing/observability layer for agent runs.
+Django Agent Runtime tracing/observability layer.
 
-Provides:
-- TraceSink: Abstract interface (from interfaces.py)
-- NoopTraceSink: Default no-op implementation
-- LangfuseTraceSink: Langfuse integration (optional)
+This module re-exports tracing components from agent_runtime_core and provides
+a Django-specific factory function that uses Django settings.
+
+For new code, consider importing directly from agent_runtime_core.tracing.
 """
 
-from django_agent_runtime.runtime.interfaces import TraceSink
-from django_agent_runtime.runtime.tracing.noop import NoopTraceSink
+# Re-export from agent_runtime_core
+from agent_runtime_core.interfaces import TraceSink
+from agent_runtime_core.tracing import NoopTraceSink
+
+# Lazy import for optional Langfuse
+def _get_langfuse_class():
+    from agent_runtime_core.tracing.langfuse import LangfuseTraceSink
+    return LangfuseTraceSink
 
 __all__ = [
     "TraceSink",
@@ -19,7 +25,7 @@ __all__ = [
 
 def get_trace_sink() -> TraceSink:
     """
-    Factory function to get a trace sink based on settings.
+    Factory function to get a trace sink based on Django settings.
 
     Returns:
         TraceSink instance (NoopTraceSink if tracing disabled)
@@ -28,18 +34,16 @@ def get_trace_sink() -> TraceSink:
 
     settings = runtime_settings()
 
-    if settings.LANGFUSE_ENABLED:
+    if getattr(settings, 'LANGFUSE_ENABLED', False):
         try:
-            from django_agent_runtime.runtime.tracing.langfuse import LangfuseTraceSink
-
+            LangfuseTraceSink = _get_langfuse_class()
             return LangfuseTraceSink(
-                public_key=settings.LANGFUSE_PUBLIC_KEY,
-                secret_key=settings.LANGFUSE_SECRET_KEY,
-                host=settings.LANGFUSE_HOST,
+                public_key=getattr(settings, 'LANGFUSE_PUBLIC_KEY', None),
+                secret_key=getattr(settings, 'LANGFUSE_SECRET_KEY', None),
+                host=getattr(settings, 'LANGFUSE_HOST', None),
             )
         except ImportError:
             import logging
-
             logging.getLogger(__name__).warning(
                 "Langfuse enabled but langfuse package not installed. Using NoopTraceSink."
             )

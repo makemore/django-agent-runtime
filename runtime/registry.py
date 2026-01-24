@@ -5,9 +5,10 @@ This module provides Django-specific discovery features on top of
 agent_runtime_core's registry:
 - Settings-based discovery via RUNTIME_REGISTRY
 - Entry-point based discovery for plugins
+- Database fallback for agents defined in AgentDefinition models
 
 The actual registry is in agent_runtime_core.registry.
-This module adds Django-specific autodiscovery.
+This module adds Django-specific autodiscovery and database fallback.
 """
 
 import logging
@@ -15,11 +16,12 @@ import logging
 # Import core registry functions
 from agent_runtime_core.registry import (
     register_runtime,
-    get_runtime,
-    list_runtimes,
+    get_runtime as _core_get_runtime,
+    list_runtimes as _core_list_runtimes,
     unregister_runtime,
     clear_registry as _core_clear_registry,
 )
+from agent_runtime_core.interfaces import AgentRuntime
 
 logger = logging.getLogger(__name__)
 
@@ -30,11 +32,198 @@ _discovered = False
 __all__ = [
     "register_runtime",
     "get_runtime",
+    "get_runtime_async",
     "list_runtimes",
+    "list_runtimes_async",
     "unregister_runtime",
     "clear_registry",
     "autodiscover_runtimes",
 ]
+
+
+def get_runtime(key: str) -> AgentRuntime:
+    """
+    Get a registered runtime by key, with database fallback.
+
+    First checks the in-memory registry, then falls back to loading
+    from the database (django_agent_studio) if available.
+
+    Note: For async contexts, use get_runtime_async() instead.
+
+    Args:
+        key: The runtime key (agent slug)
+
+    Returns:
+        The runtime instance
+
+    Raises:
+        KeyError: If runtime not found in registry or database
+    """
+    # Try the core registry first
+    try:
+        return _core_get_runtime(key)
+    except KeyError:
+        pass
+
+    # Try loading from database (AgentDefinition models)
+    runtime = _load_from_database(key)
+    if runtime:
+        # Cache it in the registry for future lookups
+        register_runtime(runtime, key=key)
+        return runtime
+
+    # Not found anywhere
+    available = _core_list_runtimes()  # Use core to avoid async issues
+    raise KeyError(f"Agent runtime not found: {key}. Available: {available}")
+
+
+async def get_runtime_async(key: str) -> AgentRuntime:
+    """
+    Get a registered runtime by key, with database fallback (async version).
+
+    First checks the in-memory registry, then falls back to loading
+    from the database (AgentDefinition models) if available.
+
+    Args:
+        key: The runtime key (agent slug)
+
+    Returns:
+        The runtime instance
+
+    Raises:
+        KeyError: If runtime not found in registry or database
+    """
+    # Try the core registry first
+    try:
+        return _core_get_runtime(key)
+    except KeyError:
+        pass
+
+    # Try loading from database (AgentDefinition models)
+    runtime = await _load_from_database_async(key)
+    if runtime:
+        # Cache it in the registry for future lookups
+        register_runtime(runtime, key=key)
+        return runtime
+
+    # Not found anywhere
+    available = await list_runtimes_async()
+    raise KeyError(f"Agent runtime not found: {key}. Available: {available}")
+
+
+def list_runtimes() -> list[str]:
+    """
+    List all available runtime keys.
+
+    Includes both registered runtimes and database-defined agents.
+
+    Note: For async contexts, use list_runtimes_async() instead.
+
+    Returns:
+        List of runtime keys
+    """
+    keys = set(_core_list_runtimes())
+
+    # Add database agents
+    db_keys = _list_database_agents()
+    keys.update(db_keys)
+
+    return sorted(keys)
+
+
+async def list_runtimes_async() -> list[str]:
+    """
+    List all available runtime keys (async version).
+
+    Includes both registered runtimes and database-defined agents.
+
+    Returns:
+        List of runtime keys
+    """
+    keys = set(_core_list_runtimes())
+
+    # Add database agents
+    db_keys = await _list_database_agents_async()
+    keys.update(db_keys)
+
+    return sorted(keys)
+
+
+def _load_from_database(key: str) -> AgentRuntime | None:
+    """
+    Try to load a runtime from the database.
+
+    Args:
+        key: The agent slug to look up
+
+    Returns:
+        AgentRuntime instance or None if not found
+    """
+    try:
+        from django_agent_runtime.models import AgentDefinition
+        from django_agent_runtime.runtime.database_runtime import DatabaseAgentRuntime
+
+        # Look up by slug - use thread-safe query
+        try:
+            agent = AgentDefinition.objects.get(slug=key, is_active=True)
+            runtime = DatabaseAgentRuntime.from_agent(agent)
+            logger.info(f"Loaded agent runtime from database: {key}")
+            return runtime
+        except AgentDefinition.DoesNotExist:
+            return None
+
+    except ImportError:
+        # Models not available
+        return None
+    except Exception as e:
+        logger.warning(f"Error loading agent from database: {e}")
+        return None
+
+
+async def _load_from_database_async(key: str) -> AgentRuntime | None:
+    """
+    Try to load a runtime from the database (async version).
+
+    Args:
+        key: The agent slug to look up
+
+    Returns:
+        AgentRuntime instance or None if not found
+    """
+    from asgiref.sync import sync_to_async
+    return await sync_to_async(_load_from_database, thread_sensitive=True)(key)
+
+
+def _list_database_agents() -> list[str]:
+    """
+    List agent slugs from the database.
+
+    Returns:
+        List of agent slugs
+    """
+    try:
+        from django_agent_runtime.models import AgentDefinition
+
+        return list(
+            AgentDefinition.objects.filter(is_active=True)
+            .values_list('slug', flat=True)
+        )
+    except ImportError:
+        return []
+    except Exception as e:
+        logger.warning(f"Error listing database agents: {e}")
+        return []
+
+
+async def _list_database_agents_async() -> list[str]:
+    """
+    List agent slugs from the database (async version).
+
+    Returns:
+        List of agent slugs
+    """
+    from asgiref.sync import sync_to_async
+    return await sync_to_async(_list_database_agents, thread_sensitive=True)()
 
 
 def clear_registry() -> None:
