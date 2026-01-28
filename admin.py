@@ -25,6 +25,9 @@ from django_agent_runtime.models import (
     AgentSystemMember,
     AgentSystemVersion,
     AgentSystemSnapshot,
+    # Spec document models
+    SpecDocument,
+    SpecDocumentVersion,
     # Persistence models
     Memory,
     PersistenceConversation,
@@ -452,6 +455,107 @@ class AgentSystemSnapshotAdmin(admin.ModelAdmin):
     list_display = ["system_version", "agent", "pinned_revision"]
     search_fields = ["system_version__system__name", "agent__name"]
     raw_id_fields = ["system_version", "agent", "pinned_revision"]
+
+
+# =============================================================================
+# Spec Document Admin
+# =============================================================================
+
+
+class SpecDocumentVersionInline(admin.TabularInline):
+    """Inline for viewing versions of a spec document."""
+
+    model = SpecDocumentVersion
+    extra = 0
+    fields = ["version_number", "title", "change_summary", "created_by", "created_at"]
+    readonly_fields = ["version_number", "title", "change_summary", "created_by", "created_at"]
+    can_delete = False
+    show_change_link = True
+    ordering = ["-version_number"]
+
+    def has_add_permission(self, request, obj=None):
+        return False
+
+
+class SpecDocumentChildInline(admin.TabularInline):
+    """Inline for viewing child documents."""
+
+    model = SpecDocument
+    fk_name = "parent"
+    extra = 0
+    fields = ["title", "linked_agent", "order", "current_version", "updated_at"]
+    readonly_fields = ["current_version", "updated_at"]
+    show_change_link = True
+    verbose_name = "Child Document"
+    verbose_name_plural = "Child Documents"
+
+
+@admin.register(SpecDocument)
+class SpecDocumentAdmin(admin.ModelAdmin):
+    """Admin for SpecDocument - specification documents for agents."""
+
+    list_display = [
+        "title",
+        "linked_agent",
+        "parent",
+        "owner",
+        "current_version",
+        "updated_at",
+    ]
+    list_filter = ["created_at", "updated_at"]
+    search_fields = ["title", "content", "linked_agent__name"]
+    readonly_fields = ["id", "current_version", "created_at", "updated_at"]
+    raw_id_fields = ["parent", "linked_agent", "owner"]
+    inlines = [SpecDocumentVersionInline, SpecDocumentChildInline]
+
+    fieldsets = (
+        (None, {
+            "fields": ("id", "title", "parent", "order")
+        }),
+        ("Content", {
+            "fields": ("content",),
+        }),
+        ("Agent Link", {
+            "fields": ("linked_agent",),
+            "description": "Link this document to an agent to sync the spec automatically.",
+        }),
+        ("Ownership", {
+            "fields": ("owner",),
+        }),
+        ("Metadata", {
+            "fields": ("current_version", "created_at", "updated_at"),
+        }),
+    )
+
+
+@admin.register(SpecDocumentVersion)
+class SpecDocumentVersionAdmin(admin.ModelAdmin):
+    """Admin for SpecDocumentVersion - version history of spec documents."""
+
+    list_display = ["document", "version_number", "title", "change_summary", "created_by", "created_at"]
+    list_filter = ["created_at"]
+    search_fields = ["document__title", "title", "content", "change_summary"]
+    readonly_fields = ["id", "document", "version_number", "title", "content", "change_summary", "created_by", "created_at"]
+    raw_id_fields = ["document", "created_by"]
+
+    fieldsets = (
+        (None, {
+            "fields": ("id", "document", "version_number")
+        }),
+        ("Content Snapshot", {
+            "fields": ("title", "content"),
+        }),
+        ("Metadata", {
+            "fields": ("change_summary", "created_by", "created_at"),
+        }),
+    )
+
+    def has_change_permission(self, request, obj=None):
+        return False  # Versions are immutable
+
+    def has_delete_permission(self, request, obj=None):
+        # Allow superusers to delete (needed for cascade deletes)
+        return request.user.is_superuser
 
 
 # =============================================================================

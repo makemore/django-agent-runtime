@@ -34,13 +34,9 @@ class AgentDefinition(models.Model):
     name = models.CharField(max_length=255)
     description = models.TextField(blank=True)
 
-    # Agent specification - human-readable behavior description
-    # This is for human oversight and documentation, separate from the technical system prompt
-    spec = models.TextField(
-        blank=True,
-        help_text="Human-readable specification of agent behavior and capabilities. "
-                  "Used for documentation and human oversight.",
-    )
+    # Note: Agent specifications are now stored in SpecDocument model
+    # which provides version history and hierarchical organization.
+    # Use agent.spec_documents.first() to get the linked spec document.
 
     # Optional icon/avatar
     icon = models.CharField(
@@ -160,9 +156,10 @@ class AgentDefinition(models.Model):
                 'spec': '',
             }
 
-        # Add spec from this agent (child overrides parent)
-        if self.spec:
-            config['spec'] = self.spec
+        # Add spec from linked SpecDocument (child overrides parent)
+        spec_doc = self.spec_documents.first()
+        if spec_doc:
+            config['spec'] = spec_doc.content
 
         # Get the active version's config
         active_version = self.versions.filter(is_active=True).first()
@@ -1359,6 +1356,15 @@ class AgentSystem(models.Model):
     name = models.CharField(max_length=255)
     description = models.TextField(blank=True)
 
+    # Shared knowledge for all agents in this system
+    # This is a list of SharedKnowledge items that get injected into all member agents
+    # Format: [{"key": "...", "title": "...", "content": "...", "inject_as": "system|context|knowledge", "priority": 0, "enabled": true}]
+    shared_knowledge = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="Shared knowledge items that apply to all agents in this system",
+    )
+
     # The entry point agent (receives initial requests)
     entry_agent = models.ForeignKey(
         AgentDefinition,
@@ -1414,6 +1420,50 @@ class AgentSystem(models.Model):
                     sub_agents.append(tool.subagent.slug)
             graph[agent.slug] = sub_agents
         return graph
+
+    def get_system_context(self):
+        """
+        Convert the shared_knowledge JSON to a SystemContext object.
+
+        Returns:
+            SystemContext object with shared knowledge items, or None if no shared knowledge
+        """
+        from agent_runtime_core.multi_agent import SystemContext, SharedKnowledge, InjectMode
+
+        if not self.shared_knowledge:
+            return None
+
+        knowledge_items = []
+        for item in self.shared_knowledge:
+            try:
+                knowledge_items.append(SharedKnowledge(
+                    key=item.get('key', ''),
+                    title=item.get('title', ''),
+                    content=item.get('content', ''),
+                    inject_as=InjectMode(item.get('inject_as', 'system')),
+                    priority=item.get('priority', 0),
+                    enabled=item.get('enabled', True),
+                    metadata=item.get('metadata', {}),
+                ))
+            except (KeyError, ValueError) as e:
+                # Skip invalid items but log
+                import logging
+                logging.getLogger(__name__).warning(
+                    f"Invalid shared knowledge item in system {self.slug}: {e}"
+                )
+
+        if not knowledge_items:
+            return None
+
+        return SystemContext(
+            system_id=str(self.id),
+            system_name=self.name,
+            shared_knowledge=knowledge_items,
+            metadata={
+                'slug': self.slug,
+                'description': self.description,
+            },
+        )
 
 
 class AgentSystemMember(models.Model):
@@ -1768,11 +1818,7 @@ class SpecDocument(models.Model):
                 title=self.title,
                 content=self.content,
             )
-
-        # Sync to linked agent if exists
-        if self.linked_agent:
-            self.linked_agent.spec = self.content
-            self.linked_agent.save(update_fields=['spec', 'updated_at'])
+        # Note: We no longer sync to agent.spec field - SpecDocument is the source of truth
 
     def get_ancestors(self):
         """Get all ancestor documents from root to parent."""

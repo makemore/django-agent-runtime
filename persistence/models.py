@@ -516,3 +516,117 @@ class PerformanceMetric(models.Model):
 
     def __str__(self):
         return f"{self.name}: {self.value} {self.unit}"
+
+
+# =============================================================================
+# Shared Memory Store Models
+# =============================================================================
+
+
+class MemoryScopeChoices(models.TextChoices):
+    """Memory scope choices matching agent_runtime_core.privacy.MemoryScope."""
+
+    CONVERSATION = "conversation", "Conversation"
+    USER = "user", "User"
+    SYSTEM = "system", "System"
+
+
+class SharedMemory(models.Model):
+    """
+    Shared memory storage for agents with semantic keys.
+
+    This model supports the SharedMemoryStore interface from agent_runtime_core.
+    Memories can be scoped to:
+    - CONVERSATION: Scoped to a single conversation (ephemeral)
+    - USER: Persists across conversations for a user
+    - SYSTEM: Shared across all agents in a system for a user
+
+    Keys use dot-notation for hierarchical organization:
+    - user.name → "Chris"
+    - user.preferences.theme → "dark"
+    - project.name → "Agent Libraries"
+
+    Privacy enforcement:
+    - Only authenticated users can have persistent memories
+    - Anonymous users get no persistent memory (enforced at store level)
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="shared_memories",
+    )
+
+    # Semantic key (dot-notation)
+    key = models.CharField(max_length=500, db_index=True)
+
+    # The actual value (JSON-serializable)
+    value = models.JSONField()
+
+    # Scope determines visibility
+    scope = models.CharField(
+        max_length=20,
+        choices=MemoryScopeChoices.choices,
+        default=MemoryScopeChoices.USER,
+        db_index=True,
+    )
+
+    # For CONVERSATION scope
+    conversation_id = models.UUIDField(null=True, blank=True, db_index=True)
+
+    # For SYSTEM scope (multi-agent systems)
+    system_id = models.CharField(max_length=255, blank=True, db_index=True)
+
+    # Source tracking (what created this memory)
+    source = models.CharField(
+        max_length=255,
+        default="agent",
+        help_text="What created this memory, e.g., 'agent:triage', 'user:explicit'",
+    )
+
+    # Confidence score (0.0-1.0)
+    confidence = models.FloatField(default=1.0)
+
+    # Optional expiration
+    expires_at = models.DateTimeField(null=True, blank=True, db_index=True)
+
+    # Additional context
+    metadata = models.JSONField(default=dict, blank=True)
+
+    # Timestamps
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        app_label = "django_agent_runtime"
+        db_table = "agent_runtime_shared_memory"
+        # Unique key per user per scope per conversation/system
+        unique_together = [("user", "key", "scope", "conversation_id", "system_id")]
+        indexes = [
+            # For prefix queries (e.g., "user.preferences.*")
+            models.Index(fields=["user", "key"]),
+            # For scope-based queries
+            models.Index(fields=["user", "scope"]),
+            # For system-scoped queries
+            models.Index(fields=["user", "system_id", "scope"]),
+            # For conversation-scoped queries
+            models.Index(fields=["user", "conversation_id", "scope"]),
+            # For source filtering
+            models.Index(fields=["user", "source"]),
+            # For expiration cleanup
+            models.Index(fields=["expires_at"]),
+        ]
+        verbose_name = "Shared Memory"
+        verbose_name_plural = "Shared Memories"
+
+    def __str__(self):
+        return f"{self.key} ({self.scope}): {str(self.value)[:50]}"
+
+    @property
+    def is_expired(self) -> bool:
+        """Check if this memory has expired."""
+        if self.expires_at is None:
+            return False
+        from django.utils import timezone
+        return timezone.now() > self.expires_at

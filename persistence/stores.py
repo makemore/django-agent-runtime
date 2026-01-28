@@ -6,8 +6,10 @@ for agent memory, conversations, tasks, preferences, knowledge, and audit.
 """
 
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, Optional, List, Dict
 from uuid import UUID
+
+from django.db import models
 
 from agent_runtime_core.persistence import (
     MemoryStore,
@@ -1345,3 +1347,255 @@ class ConversationMemoryStore:
             lines.append(f"- **{display_key}**: {value}")
 
         return "\n".join(lines)
+
+
+# =============================================================================
+# Shared Memory Store
+# =============================================================================
+
+
+from agent_runtime_core.persistence import SharedMemoryStore, MemoryItem
+from django_agent_runtime.persistence.models import SharedMemory, MemoryScopeChoices
+from typing import List, Dict
+
+
+class DjangoSharedMemoryStore(SharedMemoryStore):
+    """
+    Django-backed shared memory store.
+
+    Provides persistent storage for shared memories with:
+    - Semantic keys (dot-notation)
+    - Scope awareness (conversation, user, system)
+    - Confidence scores and source tracking
+    - Expiration support
+    - Privacy enforcement (only authenticated users)
+
+    Example:
+        store = DjangoSharedMemoryStore(user=request.user)
+
+        # Set a memory
+        await store.set("user.preferences.theme", "dark", scope="user")
+
+        # Get a memory
+        item = await store.get("user.preferences.theme")
+        print(item.value)  # "dark"
+
+        # List all user preferences
+        prefs = await store.list(prefix="user.preferences", scope="user")
+    """
+
+    def __init__(self, user):
+        """
+        Initialize the store with a user.
+
+        Args:
+            user: Django user instance. Must be authenticated for any operations.
+        """
+        self.user = user
+
+    def _model_to_item(self, model: SharedMemory) -> MemoryItem:
+        """Convert a Django model to a MemoryItem."""
+        return MemoryItem(
+            id=model.id,
+            key=model.key,
+            value=model.value,
+            scope=model.scope,
+            created_at=model.created_at,
+            updated_at=model.updated_at,
+            source=model.source,
+            confidence=model.confidence,
+            metadata=model.metadata,
+            expires_at=model.expires_at,
+            conversation_id=model.conversation_id,
+            system_id=model.system_id,
+        )
+
+    async def get(
+        self,
+        key: str,
+        scope: Optional[str] = None,
+        conversation_id: Optional[UUID] = None,
+        system_id: Optional[str] = None,
+    ) -> Optional[MemoryItem]:
+        """Get a memory item by key."""
+        filters = {"user": self.user, "key": key}
+        if scope:
+            filters["scope"] = scope
+        if conversation_id:
+            filters["conversation_id"] = conversation_id
+        if system_id:
+            filters["system_id"] = system_id
+
+        try:
+            model = await SharedMemory.objects.aget(**filters)
+            # Check expiration
+            if model.is_expired:
+                await model.adelete()
+                return None
+            return self._model_to_item(model)
+        except SharedMemory.DoesNotExist:
+            return None
+
+    async def set(
+        self,
+        key: str,
+        value: Any,
+        scope: str = "user",
+        source: str = "agent",
+        confidence: float = 1.0,
+        metadata: Optional[dict] = None,
+        expires_at: Optional[datetime] = None,
+        conversation_id: Optional[UUID] = None,
+        system_id: Optional[str] = None,
+    ) -> MemoryItem:
+        """Set a memory item. Creates or updates."""
+        defaults = {
+            "value": value,
+            "source": source,
+            "confidence": confidence,
+            "metadata": metadata or {},
+            "expires_at": expires_at,
+        }
+
+        model, created = await SharedMemory.objects.aupdate_or_create(
+            user=self.user,
+            key=key,
+            scope=scope,
+            conversation_id=conversation_id,
+            system_id=system_id or "",
+            defaults=defaults,
+        )
+
+        return self._model_to_item(model)
+
+    async def delete(
+        self,
+        key: str,
+        scope: Optional[str] = None,
+        conversation_id: Optional[UUID] = None,
+        system_id: Optional[str] = None,
+    ) -> bool:
+        """Delete a memory item."""
+        filters = {"user": self.user, "key": key}
+        if scope:
+            filters["scope"] = scope
+        if conversation_id:
+            filters["conversation_id"] = conversation_id
+        if system_id:
+            filters["system_id"] = system_id
+
+        deleted, _ = await SharedMemory.objects.filter(**filters).adelete()
+        return deleted > 0
+
+    async def list(
+        self,
+        prefix: Optional[str] = None,
+        scope: Optional[str] = None,
+        conversation_id: Optional[UUID] = None,
+        system_id: Optional[str] = None,
+        source: Optional[str] = None,
+        min_confidence: Optional[float] = None,
+        limit: int = 100,
+    ) -> List[MemoryItem]:
+        """List memory items with optional filters."""
+        from django.utils import timezone
+
+        queryset = SharedMemory.objects.filter(user=self.user)
+
+        if prefix:
+            queryset = queryset.filter(key__startswith=prefix)
+        if scope:
+            queryset = queryset.filter(scope=scope)
+        if conversation_id:
+            queryset = queryset.filter(conversation_id=conversation_id)
+        if system_id:
+            queryset = queryset.filter(system_id=system_id)
+        if source:
+            queryset = queryset.filter(source=source)
+        if min_confidence is not None:
+            queryset = queryset.filter(confidence__gte=min_confidence)
+
+        # Exclude expired items
+        queryset = queryset.filter(
+            models.Q(expires_at__isnull=True) | models.Q(expires_at__gt=timezone.now())
+        )
+
+        queryset = queryset.order_by("-updated_at")[:limit]
+
+        results = []
+        async for model in queryset:
+            results.append(self._model_to_item(model))
+        return results
+
+    async def get_many(
+        self,
+        keys: List[str],
+        scope: Optional[str] = None,
+        conversation_id: Optional[UUID] = None,
+        system_id: Optional[str] = None,
+    ) -> Dict[str, MemoryItem]:
+        """Get multiple memory items by keys."""
+        from django.utils import timezone
+
+        queryset = SharedMemory.objects.filter(user=self.user, key__in=keys)
+
+        if scope:
+            queryset = queryset.filter(scope=scope)
+        if conversation_id:
+            queryset = queryset.filter(conversation_id=conversation_id)
+        if system_id:
+            queryset = queryset.filter(system_id=system_id)
+
+        # Exclude expired items
+        queryset = queryset.filter(
+            models.Q(expires_at__isnull=True) | models.Q(expires_at__gt=timezone.now())
+        )
+
+        results = {}
+        async for model in queryset:
+            results[model.key] = self._model_to_item(model)
+        return results
+
+    async def set_many(
+        self,
+        items: List[tuple],
+        scope: str = "user",
+        source: str = "agent",
+        conversation_id: Optional[UUID] = None,
+        system_id: Optional[str] = None,
+    ) -> List[MemoryItem]:
+        """Set multiple memory items atomically."""
+        results = []
+        for key, value in items:
+            item = await self.set(
+                key,
+                value,
+                scope=scope,
+                source=source,
+                conversation_id=conversation_id,
+                system_id=system_id,
+            )
+            results.append(item)
+        return results
+
+    async def clear(
+        self,
+        scope: Optional[str] = None,
+        conversation_id: Optional[UUID] = None,
+        system_id: Optional[str] = None,
+        prefix: Optional[str] = None,
+    ) -> int:
+        """Clear memory items."""
+        queryset = SharedMemory.objects.filter(user=self.user)
+
+        if scope:
+            queryset = queryset.filter(scope=scope)
+        if conversation_id:
+            queryset = queryset.filter(conversation_id=conversation_id)
+        if system_id:
+            queryset = queryset.filter(system_id=system_id)
+        if prefix:
+            queryset = queryset.filter(key__startswith=prefix)
+
+        deleted, _ = await queryset.adelete()
+        return deleted
