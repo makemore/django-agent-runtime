@@ -168,3 +168,129 @@ class AgentRunDetailSerializer(AgentRunSerializer):
     class Meta(AgentRunSerializer.Meta):
         fields = AgentRunSerializer.Meta.fields + ["events"]
 
+
+# =============================================================================
+# File Serializers
+# =============================================================================
+
+from django_agent_runtime.models import AgentFile
+
+
+class AgentFileSerializer(serializers.ModelSerializer):
+    """Serializer for AgentFile."""
+
+    download_url = serializers.SerializerMethodField()
+    thumbnail_url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = AgentFile
+        fields = [
+            "id",
+            "conversation_id",
+            "original_filename",
+            "content_type",
+            "size_bytes",
+            "storage_backend",
+            "processing_status",
+            "extracted_text",
+            "ocr_provider",
+            "vision_provider",
+            "vision_description",
+            "processing_metadata",
+            "error_message",
+            "created_at",
+            "updated_at",
+            "processed_at",
+            "download_url",
+            "thumbnail_url",
+        ]
+        read_only_fields = [
+            "id",
+            "storage_backend",
+            "processing_status",
+            "extracted_text",
+            "ocr_provider",
+            "vision_provider",
+            "vision_description",
+            "processing_metadata",
+            "error_message",
+            "created_at",
+            "updated_at",
+            "processed_at",
+            "download_url",
+            "thumbnail_url",
+        ]
+
+    def get_download_url(self, obj):
+        """Get the download URL for the file."""
+        request = self.context.get("request")
+        if request and obj.storage_path:
+            return request.build_absolute_uri(f"/api/files/{obj.id}/download/")
+        return None
+
+    def get_thumbnail_url(self, obj):
+        """Get the thumbnail URL if available."""
+        request = self.context.get("request")
+        if request and obj.thumbnail_path:
+            return request.build_absolute_uri(f"/api/files/{obj.id}/thumbnail/")
+        return None
+
+
+class AgentFileUploadSerializer(serializers.Serializer):
+    """Serializer for file upload requests."""
+
+    file = serializers.FileField(
+        required=True,
+        help_text="The file to upload",
+    )
+    conversation_id = serializers.UUIDField(
+        required=False,
+        allow_null=True,
+        help_text="Optional conversation to associate the file with",
+    )
+    process = serializers.BooleanField(
+        required=False,
+        default=True,
+        help_text="Whether to process the file (extract text, OCR, etc.)",
+    )
+    ocr_provider = serializers.ChoiceField(
+        required=False,
+        allow_null=True,
+        choices=["tesseract", "google_vision", "aws_textract", "azure_document"],
+        help_text="OCR provider to use for image/PDF text extraction",
+    )
+    vision_provider = serializers.ChoiceField(
+        required=False,
+        allow_null=True,
+        choices=["openai", "anthropic", "gemini"],
+        help_text="Vision AI provider to use for image understanding",
+    )
+    vision_prompt = serializers.CharField(
+        required=False,
+        allow_null=True,
+        allow_blank=True,
+        help_text="Custom prompt for vision AI analysis",
+    )
+
+    def validate_file(self, value):
+        """Validate file size and type."""
+        from django_agent_runtime.conf import runtime_settings
+
+        settings = runtime_settings()
+        max_size = settings.FILE_MAX_SIZE_BYTES
+
+        if value.size > max_size:
+            raise serializers.ValidationError(
+                f"File size ({value.size} bytes) exceeds maximum allowed size ({max_size} bytes)"
+            )
+
+        # Check allowed types if configured
+        if settings.FILE_ALLOWED_TYPES:
+            content_type = value.content_type
+            if content_type not in settings.FILE_ALLOWED_TYPES:
+                raise serializers.ValidationError(
+                    f"File type '{content_type}' is not allowed. "
+                    f"Allowed types: {', '.join(settings.FILE_ALLOWED_TYPES)}"
+                )
+
+        return value

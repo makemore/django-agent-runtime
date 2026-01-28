@@ -33,7 +33,15 @@ class AgentDefinition(models.Model):
     # Human-readable name
     name = models.CharField(max_length=255)
     description = models.TextField(blank=True)
-    
+
+    # Agent specification - human-readable behavior description
+    # This is for human oversight and documentation, separate from the technical system prompt
+    spec = models.TextField(
+        blank=True,
+        help_text="Human-readable specification of agent behavior and capabilities. "
+                  "Used for documentation and human oversight.",
+    )
+
     # Optional icon/avatar
     icon = models.CharField(
         max_length=100,
@@ -88,6 +96,29 @@ class AgentDefinition(models.Model):
         }""",
     )
 
+    # ==========================================================================
+    # File Upload / Processing Configuration
+    # ==========================================================================
+
+    file_config = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="""File upload and processing configuration for this agent. Example:
+        {
+            "enabled": true,
+            "max_file_size_mb": 100,
+            "allowed_types": ["image/*", "application/pdf", "text/*"],
+            "ocr_provider": "tesseract",
+            "vision_provider": "openai",
+            "enable_thumbnails": true,
+            "storage_path": "agent_files/{agent_id}/"
+        }
+
+        Supported OCR providers: tesseract, google_vision, aws_textract, azure_di
+        Supported vision providers: openai, anthropic, gemini
+        """,
+    )
+
     # Status
     is_active = models.BooleanField(default=True)
 
@@ -126,7 +157,12 @@ class AgentDefinition(models.Model):
                     'chunk_size': 500,
                     'chunk_overlap': 50,
                 },
+                'spec': '',
             }
+
+        # Add spec from this agent (child overrides parent)
+        if self.spec:
+            config['spec'] = self.spec
 
         # Get the active version's config
         active_version = self.versions.filter(is_active=True).first()
@@ -1622,3 +1658,265 @@ class AgentSystemSnapshot(models.Model):
             The agent config dict from the pinned revision
         """
         return self.pinned_revision.content.copy()
+
+
+class SpecDocument(models.Model):
+    """
+    A specification document for describing agent behavior in plain English.
+
+    Documents form a tree structure that can be:
+    - Viewed as a single unified document for human review
+    - Linked to specific agents for two-way sync
+    - Versioned for full history tracking
+
+    The tree structure allows organizing specs hierarchically:
+    - Root document: "Company AI Agents"
+      - Child: "Customer Support Agents"
+        - Child: "Billing Support" (linked to billing-agent)
+        - Child: "Technical Support" (linked to tech-agent)
+      - Child: "Internal Tools"
+        - Child: "HR Assistant" (linked to hr-agent)
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    # Tree structure
+    parent = models.ForeignKey(
+        'self',
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name='children',
+        help_text="Parent document (null for root documents)",
+    )
+
+    # Ordering within siblings
+    order = models.PositiveIntegerField(
+        default=0,
+        help_text="Order among sibling documents",
+    )
+
+    # Document content
+    title = models.CharField(
+        max_length=255,
+        help_text="Document title (used as heading when rendering)",
+    )
+
+    content = models.TextField(
+        blank=True,
+        help_text="Markdown content of this document section",
+    )
+
+    # Optional link to an agent
+    # When linked, changes to this doc update the agent's spec field
+    linked_agent = models.ForeignKey(
+        AgentDefinition,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='spec_documents',
+        help_text="Agent whose spec is defined by this document",
+    )
+
+    # Ownership
+    owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='spec_documents',
+    )
+
+    # Metadata
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    # Current version number (incremented on each save)
+    current_version = models.PositiveIntegerField(default=1)
+
+    class Meta:
+        ordering = ['parent_id', 'order', 'title']
+        verbose_name = "Spec Document"
+        verbose_name_plural = "Spec Documents"
+
+    def __str__(self):
+        if self.linked_agent:
+            return f"{self.title} → {self.linked_agent.name}"
+        return self.title
+
+    def save(self, *args, **kwargs):
+        # Check if content changed (for versioning)
+        create_version = False
+        if self.pk:
+            try:
+                old = SpecDocument.objects.get(pk=self.pk)
+                if old.content != self.content or old.title != self.title:
+                    create_version = True
+                    self.current_version += 1
+            except SpecDocument.DoesNotExist:
+                create_version = True
+        else:
+            create_version = True
+
+        super().save(*args, **kwargs)
+
+        # Create version snapshot
+        if create_version:
+            SpecDocumentVersion.objects.create(
+                document=self,
+                version_number=self.current_version,
+                title=self.title,
+                content=self.content,
+            )
+
+        # Sync to linked agent if exists
+        if self.linked_agent:
+            self.linked_agent.spec = self.content
+            self.linked_agent.save(update_fields=['spec', 'updated_at'])
+
+    def get_ancestors(self):
+        """Get all ancestor documents from root to parent."""
+        ancestors = []
+        current = self.parent
+        while current:
+            ancestors.insert(0, current)
+            current = current.parent
+        return ancestors
+
+    def get_descendants(self):
+        """Get all descendant documents in tree order."""
+        descendants = []
+        for child in self.children.all().order_by('order', 'title'):
+            descendants.append(child)
+            descendants.extend(child.get_descendants())
+        return descendants
+
+    def get_full_path(self):
+        """Get the full path as a string (e.g., 'Root / Child / Grandchild')."""
+        ancestors = self.get_ancestors()
+        path_parts = [a.title for a in ancestors] + [self.title]
+        return ' / '.join(path_parts)
+
+    def render_tree_as_markdown(self, level=1):
+        """
+        Render this document and all descendants as a single markdown document.
+
+        Args:
+            level: Heading level to start at (1 = #, 2 = ##, etc.)
+
+        Returns:
+            Complete markdown string
+        """
+        parts = []
+
+        # Add this document's content
+        heading = '#' * min(level, 6)
+        parts.append(f"{heading} {self.title}")
+
+        if self.linked_agent:
+            parts.append(f"*Linked to agent: `{self.linked_agent.slug}`*")
+
+        if self.content:
+            parts.append("")
+            parts.append(self.content)
+
+        # Add children
+        for child in self.children.all().order_by('order', 'title'):
+            parts.append("")
+            parts.append(child.render_tree_as_markdown(level=level + 1))
+
+        return '\n'.join(parts)
+
+    @classmethod
+    def get_root_documents(cls, owner=None):
+        """Get all root documents (no parent), optionally filtered by owner."""
+        qs = cls.objects.filter(parent__isnull=True)
+        if owner:
+            qs = qs.filter(owner=owner)
+        return qs.order_by('order', 'title')
+
+
+class SpecDocumentVersion(models.Model):
+    """
+    An immutable version snapshot of a spec document.
+
+    Created automatically whenever a document's content or title changes.
+    Allows full history tracking and rollback.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    document = models.ForeignKey(
+        SpecDocument,
+        on_delete=models.CASCADE,
+        related_name='versions',
+    )
+
+    # Version number (matches document.current_version at time of creation)
+    version_number = models.PositiveIntegerField()
+
+    # Snapshot of content at this version
+    title = models.CharField(max_length=255)
+    content = models.TextField(blank=True)
+
+    # Metadata
+    created_at = models.DateTimeField(auto_now_add=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='spec_document_versions',
+    )
+
+    # Optional change description
+    change_summary = models.CharField(
+        max_length=255,
+        blank=True,
+        help_text="Brief description of what changed",
+    )
+
+    class Meta:
+        ordering = ['-version_number']
+        unique_together = [('document', 'version_number')]
+        verbose_name = "Spec Document Version"
+        verbose_name_plural = "Spec Document Versions"
+
+    def __str__(self):
+        return f"{self.document.title} v{self.version_number}"
+
+    def get_diff_from_previous(self):
+        """
+        Get a simple diff from the previous version.
+
+        Returns:
+            Dict with 'title_changed', 'content_changed', 'previous_version'
+        """
+        try:
+            previous = SpecDocumentVersion.objects.get(
+                document=self.document,
+                version_number=self.version_number - 1,
+            )
+            return {
+                'title_changed': previous.title != self.title,
+                'content_changed': previous.content != self.content,
+                'previous_version': previous.version_number,
+                'previous_title': previous.title,
+            }
+        except SpecDocumentVersion.DoesNotExist:
+            return {
+                'title_changed': False,
+                'content_changed': False,
+                'previous_version': None,
+                'previous_title': None,
+            }
+
+    def restore(self):
+        """
+        Restore the document to this version.
+
+        Creates a new version with the restored content.
+        """
+        self.document.title = self.title
+        self.document.content = self.content
+        self.document.save()  # This will create a new version

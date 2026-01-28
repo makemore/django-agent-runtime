@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "django-agent-runtime"
-version = "0.5.0"
+version = "0.6.0"
 description = "Production-grade AI agent runtime for Django - framework and model agnostic"
 readme = "README.md"
 license = "MIT"
@@ -85,7 +85,26 @@ Issues = "https://github.com/makemore/django-agent-runtime/issues"
 # my_runtime = "my_plugin.runtime:register"
 
 [tool.setuptools]
-packages = ["django_agent_runtime", "django_agent_runtime.api", "django_agent_runtime.models", "django_agent_runtime.persistence", "django_agent_runtime.runtime", "django_agent_runtime.runtime.events", "django_agent_runtime.runtime.llm", "django_agent_runtime.runtime.queue", "django_agent_runtime.runtime.tracing", "django_agent_runtime.steps", "django_agent_runtime.management", "django_agent_runtime.management.commands", "django_agent_runtime.migrations", "django_agent_runtime.examples", "django_agent_runtime.vectorstore", "django_agent_runtime.rag"]
+packages = [
+    "django_agent_runtime",
+    "django_agent_runtime.api",
+    "django_agent_runtime.dynamic_tools",
+    "django_agent_runtime.examples",
+    "django_agent_runtime.management",
+    "django_agent_runtime.management.commands",
+    "django_agent_runtime.migrations",
+    "django_agent_runtime.models",
+    "django_agent_runtime.persistence",
+    "django_agent_runtime.rag",
+    "django_agent_runtime.runtime",
+    "django_agent_runtime.runtime.events",
+    "django_agent_runtime.runtime.llm",
+    "django_agent_runtime.runtime.queue",
+    "django_agent_runtime.runtime.tracing",
+    "django_agent_runtime.services",
+    "django_agent_runtime.steps",
+    "django_agent_runtime.vectorstore",
+]
 package-dir = {"django_agent_runtime" = "."}
 
 [tool.black]

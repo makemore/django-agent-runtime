@@ -153,6 +153,9 @@ def _load_from_database(key: str) -> AgentRuntime | None:
     """
     Try to load a runtime from the database.
 
+    Prefers DynamicAgentRuntime from django_agent_studio (has memory support)
+    and falls back to DatabaseAgentRuntime if studio is not installed.
+
     Args:
         key: The agent slug to look up
 
@@ -161,16 +164,27 @@ def _load_from_database(key: str) -> AgentRuntime | None:
     """
     try:
         from django_agent_runtime.models import AgentDefinition
-        from django_agent_runtime.runtime.database_runtime import DatabaseAgentRuntime
 
         # Look up by slug - use thread-safe query
         try:
             agent = AgentDefinition.objects.get(slug=key, is_active=True)
-            runtime = DatabaseAgentRuntime.from_agent(agent)
-            logger.info(f"Loaded agent runtime from database: {key}")
-            return runtime
         except AgentDefinition.DoesNotExist:
             return None
+
+        # Try DynamicAgentRuntime from django_agent_studio first (has memory support)
+        try:
+            from django_agent_studio.agents.dynamic import DynamicAgentRuntime
+            runtime = DynamicAgentRuntime(agent)
+            logger.info(f"Loaded agent runtime from database (DynamicAgentRuntime): {key}")
+            return runtime
+        except ImportError:
+            pass
+
+        # Fall back to DatabaseAgentRuntime (no memory support)
+        from django_agent_runtime.runtime.database_runtime import DatabaseAgentRuntime
+        runtime = DatabaseAgentRuntime.from_agent(agent)
+        logger.info(f"Loaded agent runtime from database (DatabaseAgentRuntime): {key}")
+        return runtime
 
     except ImportError:
         # Models not available

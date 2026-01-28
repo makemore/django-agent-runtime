@@ -16,12 +16,14 @@ import asyncio
 import json
 from uuid import UUID
 
-from django.http import StreamingHttpResponse
+from django.http import StreamingHttpResponse, FileResponse
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
+from rest_framework.parsers import MultiPartParser, FormParser
 
-from django_agent_runtime.models import AgentRun, AgentConversation, AgentEvent
+from django_agent_runtime.models import AgentRun, AgentConversation, AgentEvent, AgentFile
+from django_agent_runtime.storage import get_storage_backend
 from django_agent_runtime.models.base import RunStatus
 from django_agent_runtime.api.serializers import (
     AgentRunSerializer,
@@ -30,6 +32,8 @@ from django_agent_runtime.api.serializers import (
     AgentConversationSerializer,
     AgentConversationDetailSerializer,
     AgentEventSerializer,
+    AgentFileSerializer,
+    AgentFileUploadSerializer,
 )
 from django_agent_runtime.api.permissions import get_anonymous_session
 from django_agent_runtime.conf import runtime_settings, get_hook
@@ -293,10 +297,10 @@ def sync_event_stream(request, run_id: str):
 
     # Check access - user must own the run
     has_access = False
-    
+
     # Get authenticated user (may be set by middleware or we need to check token)
     user = request.user if hasattr(request, 'user') else None
-    
+
     # Support token auth via query param for SSE (browsers can't set headers on EventSource)
     if (not user or not user.is_authenticated) and request.GET.get('token'):
         from rest_framework.authtoken.models import Token
@@ -305,7 +309,7 @@ def sync_event_stream(request, run_id: str):
             user = token.user
         except Token.DoesNotExist:
             pass
-    
+
     if user and user.is_authenticated:
         # User owns the conversation
         if run.conversation and run.conversation.user == user:
@@ -316,7 +320,7 @@ def sync_event_stream(request, run_id: str):
         # Allow access to runs without ownership info (backwards compat)
         elif not run.conversation and "user_id" not in run.metadata:
             has_access = True
-    
+
     # Check anonymous session if configured
     if not has_access:
         anonymous_token = request.headers.get('X-Anonymous-Token') or request.GET.get('anonymous_token')
@@ -449,9 +453,9 @@ async def async_event_stream(request, run_id: str):
             run = AgentRun.objects.select_related("conversation").get(id=run_uuid)
         except AgentRun.DoesNotExist:
             return None
-            
+
         user = request.user if hasattr(request, 'user') else None
-        
+
         if user and user.is_authenticated:
             if run.conversation and run.conversation.user == user:
                 return run
@@ -459,7 +463,7 @@ async def async_event_stream(request, run_id: str):
                 return run
             elif not run.conversation and "user_id" not in run.metadata:
                 return run
-        
+
         return None
 
     run = await check_access()
@@ -513,3 +517,147 @@ class BaseModelsViewSet(viewsets.ViewSet):
             "models": models,
             "default": DEFAULT_MODEL,
         })
+
+
+
+class BaseAgentFileViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet for managing agent files.
+
+    Provides CRUD operations for file uploads, plus download and thumbnail actions.
+    Supports both authenticated users and anonymous sessions.
+    """
+
+    serializer_class = AgentFileSerializer
+    parser_classes = [MultiPartParser, FormParser]
+
+    def get_queryset(self):
+        """Get files owned by the current user or anonymous session."""
+        user = self.request.user
+        if user.is_authenticated:
+            return AgentFile.objects.filter(user=user).order_by("-created_at")
+        else:
+            session_id = get_anonymous_session(self.request)
+            if session_id:
+                return AgentFile.objects.filter(
+                    anonymous_session_id=session_id
+                ).order_by("-created_at")
+            return AgentFile.objects.none()
+
+    def get_serializer_class(self):
+        """Use upload serializer for create action."""
+        if self.action == "create":
+            return AgentFileUploadSerializer
+        return AgentFileSerializer
+
+    def create(self, request, *args, **kwargs):
+        """Handle file upload."""
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        uploaded_file = serializer.validated_data["file"]
+        conversation_id = serializer.validated_data.get("conversation_id")
+
+        # Get storage backend
+        storage = get_storage_backend()
+
+        # Save file to storage
+        try:
+            stored_file = storage.save(
+                file_obj=uploaded_file,
+                filename=uploaded_file.name,
+                content_type=uploaded_file.content_type or "application/octet-stream",
+            )
+        except Exception as e:
+            return Response(
+                {"error": f"Failed to save file: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        # Create database record
+        user = request.user if request.user.is_authenticated else None
+        anonymous_session_id = (
+            None if user else get_anonymous_session(request)
+        )
+
+        # Get conversation if provided
+        conversation = None
+        if conversation_id:
+            try:
+                conversation = AgentConversation.objects.get(id=conversation_id)
+            except AgentConversation.DoesNotExist:
+                pass
+
+        agent_file = AgentFile.objects.create(
+            user=user,
+            anonymous_session_id=anonymous_session_id,
+            conversation=conversation,
+            original_filename=uploaded_file.name,
+            stored_path=stored_file.path,
+            content_type=stored_file.content_type,
+            size_bytes=stored_file.size_bytes,
+            storage_backend=stored_file.backend,
+        )
+
+        output_serializer = AgentFileSerializer(agent_file)
+        return Response(output_serializer.data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=["get"])
+    def download(self, request, pk=None):
+        """Download the file."""
+        agent_file = self.get_object()
+        storage = get_storage_backend()
+
+        try:
+            file_obj = storage.get(agent_file.stored_path)
+            response = FileResponse(
+                file_obj,
+                content_type=agent_file.content_type,
+                as_attachment=True,
+                filename=agent_file.original_filename,
+            )
+            return response
+        except Exception as e:
+            return Response(
+                {"error": f"Failed to retrieve file: {str(e)}"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+    @action(detail=True, methods=["get"])
+    def thumbnail(self, request, pk=None):
+        """Get thumbnail for the file (if available)."""
+        agent_file = self.get_object()
+
+        if not agent_file.thumbnail_path:
+            return Response(
+                {"error": "No thumbnail available"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        storage = get_storage_backend()
+        try:
+            file_obj = storage.get(agent_file.thumbnail_path)
+            return FileResponse(
+                file_obj,
+                content_type="image/png",
+            )
+        except Exception as e:
+            return Response(
+                {"error": f"Failed to retrieve thumbnail: {str(e)}"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+    def destroy(self, request, *args, **kwargs):
+        """Delete file from storage and database."""
+        agent_file = self.get_object()
+        storage = get_storage_backend()
+
+        # Delete from storage
+        try:
+            storage.delete(agent_file.stored_path)
+            if agent_file.thumbnail_path:
+                storage.delete(agent_file.thumbnail_path)
+        except Exception:
+            pass  # Continue even if storage delete fails
+
+        return super().destroy(request, *args, **kwargs)

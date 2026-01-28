@@ -117,6 +117,52 @@ class AgentRuntimeSettings:
     # Model must have: token field, is_expired property
     ANONYMOUS_SESSION_MODEL: Optional[str] = None
 
+    # File storage configuration
+    FILE_STORAGE_BACKEND: str = "local"  # "local" | "s3" | "gcs"
+    FILE_STORAGE_ROOT: str = "agent_files"  # Local path or bucket prefix
+    FILE_MAX_SIZE_MB: int = 100  # Maximum file size in MB
+    FILE_ALLOWED_TYPES: list = field(default_factory=lambda: [
+        # Documents
+        "application/pdf",
+        "application/msword",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/vnd.ms-excel",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "text/plain",
+        "text/csv",
+        "text/markdown",
+        # Images
+        "image/jpeg",
+        "image/png",
+        "image/gif",
+        "image/webp",
+        "image/svg+xml",
+        # Data
+        "application/json",
+        "application/xml",
+        "text/xml",
+    ])
+
+    # S3 configuration (when FILE_STORAGE_BACKEND = "s3")
+    FILE_S3_BUCKET: Optional[str] = None
+    FILE_S3_REGION: Optional[str] = None
+    FILE_S3_ACCESS_KEY: Optional[str] = None
+    FILE_S3_SECRET_KEY: Optional[str] = None
+    FILE_S3_ENDPOINT_URL: Optional[str] = None  # For S3-compatible services
+
+    # GCS configuration (when FILE_STORAGE_BACKEND = "gcs")
+    FILE_GCS_BUCKET: Optional[str] = None
+    FILE_GCS_PROJECT: Optional[str] = None
+    FILE_GCS_CREDENTIALS_PATH: Optional[str] = None
+
+    # File processing options
+    FILE_ENABLE_OCR: bool = False
+    FILE_OCR_PROVIDER: str = "tesseract"  # "tesseract" | "google_vision" | "aws_textract" | "azure"
+    FILE_ENABLE_VISION: bool = False
+    FILE_VISION_PROVIDER: str = "openai"  # "openai" | "anthropic" | "gemini"
+    FILE_GENERATE_THUMBNAILS: bool = True
+    FILE_THUMBNAIL_SIZE: tuple = (200, 200)
+
     # Event visibility configuration
     # Controls which events are shown to users in the UI
     # Levels: "internal" (never shown), "debug" (shown in debug mode), "user" (always shown)

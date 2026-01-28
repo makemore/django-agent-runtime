@@ -19,6 +19,7 @@ from rest_framework.routers import DefaultRouter
 
 from django_agent_runtime.api.views import (
     BaseAgentConversationViewSet,
+    BaseAgentFileViewSet,
     BaseAgentRunViewSet,
     BaseModelsViewSet,
     sync_event_stream,
@@ -29,6 +30,7 @@ app_name = "django_agent_runtime"
 # Create router for viewsets
 router = DefaultRouter()
 router.register(r"conversations", BaseAgentConversationViewSet, basename="conversation")
+router.register(r"files", BaseAgentFileViewSet, basename="file")
 router.register(r"runs", BaseAgentRunViewSet, basename="run")
 router.register(r"models", BaseModelsViewSet, basename="models")
 

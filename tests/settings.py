@@ -37,7 +37,7 @@ else:
         }
     }
 
-ROOT_URLCONF = "tests.urls"
+ROOT_URLCONF = "django_agent_runtime.tests.urls"
 
 # Use the default Django user model
 AUTH_USER_MODEL = "auth.User"

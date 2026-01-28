@@ -243,6 +243,10 @@ class FactTypeChoices(models.TextChoices):
 class Fact(models.Model):
     """
     A learned fact about user, project, or context.
+
+    Facts can be scoped to:
+    - Global (user-level): conversation_id is NULL
+    - Conversation-specific: conversation_id is set
     """
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -250,6 +254,13 @@ class Fact(models.Model):
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
         related_name="agent_facts",
+    )
+    # Optional conversation scope - if set, fact is only visible in that conversation
+    conversation_id = models.UUIDField(
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text="If set, this fact is scoped to a specific conversation",
     )
     key = models.CharField(max_length=255, db_index=True)
     value = models.JSONField()
@@ -269,7 +280,8 @@ class Fact(models.Model):
     class Meta:
         app_label = "django_agent_runtime"
         db_table = "agent_runtime_fact"
-        unique_together = [("user", "key")]
+        # Unique key per user per conversation (or global if conversation_id is NULL)
+        unique_together = [("user", "conversation_id", "key")]
         verbose_name = "Fact"
         verbose_name_plural = "Facts"
 

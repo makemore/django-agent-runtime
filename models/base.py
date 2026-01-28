@@ -473,3 +473,153 @@ class AbstractAgentCheckpoint(models.Model):
     def __str__(self):
         return f"Checkpoint {self.seq}"
 
+
+class AbstractAgentFile(models.Model):
+    """
+    Abstract model for file storage and processing.
+
+    Tracks uploaded files, their processing status, and extracted content.
+    Integrates with agent_runtime_core file processing module.
+    """
+
+    class ProcessingStatus(models.TextChoices):
+        PENDING = "pending", "Pending"
+        PROCESSING = "processing", "Processing"
+        COMPLETED = "completed", "Completed"
+        FAILED = "failed", "Failed"
+
+    class StorageBackend(models.TextChoices):
+        LOCAL = "local", "Local Filesystem"
+        S3 = "s3", "Amazon S3"
+        GCS = "gcs", "Google Cloud Storage"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    # File identification
+    filename = models.CharField(
+        max_length=255,
+        help_text="Stored filename (may be sanitized/renamed)",
+    )
+    original_filename = models.CharField(
+        max_length=255,
+        help_text="Original filename as uploaded",
+    )
+
+    # File metadata
+    content_type = models.CharField(
+        max_length=255,
+        help_text="MIME type of the file",
+    )
+    size_bytes = models.PositiveBigIntegerField(
+        help_text="File size in bytes",
+    )
+
+    # Storage location
+    storage_backend = models.CharField(
+        max_length=20,
+        choices=StorageBackend.choices,
+        default=StorageBackend.LOCAL,
+        help_text="Storage backend type",
+    )
+    storage_path = models.CharField(
+        max_length=1024,
+        help_text="Path or key within the storage backend",
+    )
+
+    # Processing state
+    processing_status = models.CharField(
+        max_length=20,
+        choices=ProcessingStatus.choices,
+        default=ProcessingStatus.PENDING,
+        help_text="Current processing status",
+    )
+    error_message = models.TextField(
+        blank=True,
+        default="",
+        help_text="Error message if processing failed",
+    )
+
+    # Processed content
+    extracted_text = models.TextField(
+        blank=True,
+        default="",
+        help_text="Text extracted from the file",
+    )
+    processed_data = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Additional processed data (OCR results, vision analysis, etc.)",
+    )
+
+    # Optional thumbnail for images/documents
+    thumbnail_path = models.CharField(
+        max_length=1024,
+        blank=True,
+        default="",
+        help_text="Path to thumbnail image if generated",
+    )
+
+    # File metadata from processing
+    file_metadata = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Metadata extracted from the file (dimensions, page count, etc.)",
+    )
+
+    # Ownership (optional - concrete model may add FK to conversation)
+    # conversation = models.ForeignKey(...)
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="%(class)s_files",
+        help_text="User who uploaded the file",
+    )
+    anonymous_session_id = models.UUIDField(
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text="Anonymous session ID for unauthenticated users",
+    )
+
+    # Timestamps
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        abstract = True
+        ordering = ["-created_at"]
+        verbose_name = "Agent File"
+        verbose_name_plural = "Agent Files"
+
+    def __str__(self):
+        return f"{self.original_filename} ({self.processing_status})"
+
+    @property
+    def is_processed(self) -> bool:
+        """Check if file has been successfully processed."""
+        return self.processing_status == self.ProcessingStatus.COMPLETED
+
+    @property
+    def is_image(self) -> bool:
+        """Check if file is an image."""
+        return self.content_type.startswith("image/")
+
+    @property
+    def is_document(self) -> bool:
+        """Check if file is a document (PDF, Word, etc.)."""
+        doc_types = [
+            "application/pdf",
+            "application/msword",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "application/vnd.ms-excel",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        ]
+        return self.content_type in doc_types
+
+    def get_download_url(self) -> str:
+        """Get URL for downloading the file. Override in concrete class if needed."""
+        from django.urls import reverse
+        return reverse("agent-files-download", kwargs={"pk": str(self.id)})
+

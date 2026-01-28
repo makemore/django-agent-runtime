@@ -1189,3 +1189,159 @@ class DjangoAuditStore(AuditStore):
             "p95": percentile(values, 95),
             "p99": percentile(values, 99),
         }
+
+
+# =============================================================================
+# Conversation-Scoped Memory Store
+# =============================================================================
+
+
+class ConversationMemoryStore:
+    """
+    A simple memory store scoped to a specific conversation.
+
+    This is used by designed agents to remember things within a conversation.
+    Memories are stored as Facts with a conversation_id.
+
+    Example:
+        store = ConversationMemoryStore(user=request.user, conversation_id=conv_id)
+
+        # Remember something
+        await store.remember("user_name", "Alice")
+
+        # Recall all memories
+        memories = await store.recall_all()
+        # Returns: {"user_name": "Alice", ...}
+
+        # Get a specific memory
+        name = await store.get("user_name")
+    """
+
+    def __init__(self, user, conversation_id: UUID):
+        """
+        Initialize the conversation memory store.
+
+        Args:
+            user: The Django user (for multi-tenant scoping)
+            conversation_id: The conversation to scope memories to
+        """
+        self.user = user
+        self.conversation_id = conversation_id
+
+    async def remember(self, key: str, value: Any, source: str = "agent") -> None:
+        """
+        Store a memory for this conversation.
+
+        Args:
+            key: A descriptive key for the memory (e.g., "user_name", "project_goal")
+            value: The value to remember (any JSON-serializable value)
+            source: Where this memory came from (default: "agent")
+        """
+        from uuid import uuid4
+
+        # Try to update existing, or create new
+        try:
+            db_fact = await FactModel.objects.aget(
+                user=self.user,
+                conversation_id=self.conversation_id,
+                key=key,
+            )
+            db_fact.value = value
+            db_fact.source = source
+            await db_fact.asave(update_fields=["value", "source", "updated_at"])
+        except FactModel.DoesNotExist:
+            await FactModel.objects.acreate(
+                id=uuid4(),
+                user=self.user,
+                conversation_id=self.conversation_id,
+                key=key,
+                value=value,
+                fact_type=FactTypeChoices.CONTEXT,
+                source=source,
+            )
+
+    async def get(self, key: str) -> Optional[Any]:
+        """
+        Get a specific memory by key.
+
+        Args:
+            key: The memory key
+
+        Returns:
+            The memory value, or None if not found
+        """
+        try:
+            db_fact = await FactModel.objects.aget(
+                user=self.user,
+                conversation_id=self.conversation_id,
+                key=key,
+            )
+            return db_fact.value
+        except FactModel.DoesNotExist:
+            return None
+
+    async def recall_all(self) -> dict[str, Any]:
+        """
+        Recall all memories for this conversation.
+
+        Returns:
+            Dictionary of key -> value for all memories
+        """
+        memories = {}
+        async for db_fact in FactModel.objects.filter(
+            user=self.user,
+            conversation_id=self.conversation_id,
+        ).order_by("created_at"):
+            memories[db_fact.key] = db_fact.value
+        return memories
+
+    async def forget(self, key: str) -> bool:
+        """
+        Forget a specific memory.
+
+        Args:
+            key: The memory key to forget
+
+        Returns:
+            True if the memory existed and was deleted
+        """
+        deleted, _ = await FactModel.objects.filter(
+            user=self.user,
+            conversation_id=self.conversation_id,
+            key=key,
+        ).adelete()
+        return deleted > 0
+
+    async def forget_all(self) -> int:
+        """
+        Forget all memories for this conversation.
+
+        Returns:
+            Number of memories deleted
+        """
+        deleted, _ = await FactModel.objects.filter(
+            user=self.user,
+            conversation_id=self.conversation_id,
+        ).adelete()
+        return deleted
+
+    def format_for_prompt(self, memories: dict[str, Any]) -> str:
+        """
+        Format memories for inclusion in a system prompt.
+
+        Args:
+            memories: Dictionary of memories from recall_all()
+
+        Returns:
+            Formatted string for prompt injection
+        """
+        if not memories:
+            return ""
+
+        lines = ["# Remembered Information", ""]
+        for key, value in memories.items():
+            # Format the key nicely
+            display_key = key.replace("_", " ").title()
+            lines.append(f"- **{display_key}**: {value}")
+
+        return "\n".join(lines)
