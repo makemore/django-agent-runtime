@@ -132,7 +132,6 @@ class BaseAgentRunViewSet(viewsets.ModelViewSet):
     def create(self, request, *args, **kwargs):
         """Create a new agent run."""
         serializer = self.get_serializer(data=request.data)
-        serializer.validate(request.data)
         serializer.is_valid(raise_exception=True)
 
         data = serializer.validated_data
