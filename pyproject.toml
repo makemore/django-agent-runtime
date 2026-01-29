@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "django-agent-runtime"
-version = "0.7.0"
+version = "0.7.2"
 description = "Production-grade AI agent runtime for Django - framework and model agnostic"
 readme = "README.md"
 license = "MIT"
@@ -103,6 +103,7 @@ packages = [
     "django_agent_runtime.runtime.tracing",
     "django_agent_runtime.services",
     "django_agent_runtime.steps",
+    "django_agent_runtime.storage",
     "django_agent_runtime.vectorstore",
 ]
 package-dir = {"django_agent_runtime" = "."}
