@@ -1966,3 +1966,161 @@ class SpecDocumentVersion(models.Model):
         self.document.title = self.title
         self.document.content = self.content
         self.document.save()  # This will create a new version
+
+
+# =============================================================================
+# Collaborator Models for Multi-User Access Control
+# =============================================================================
+
+
+class CollaboratorRole(models.TextChoices):
+    """Role choices for collaborators on agents and systems."""
+    VIEWER = 'viewer', 'Viewer'      # Can view but not edit
+    EDITOR = 'editor', 'Editor'      # Can view and edit
+    ADMIN = 'admin', 'Admin'         # Can view, edit, and manage collaborators
+
+
+class AgentCollaborator(models.Model):
+    """
+    Grants a user access to an agent with a specific role.
+
+    This enables multi-user collaboration on agents beyond the single owner.
+    The owner always has full access; collaborators have role-based access.
+
+    Roles:
+    - viewer: Can view the agent and test it
+    - editor: Can view and edit the agent configuration
+    - admin: Can view, edit, and manage other collaborators
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    agent = models.ForeignKey(
+        AgentDefinition,
+        on_delete=models.CASCADE,
+        related_name='collaborators',
+        help_text="The agent this collaborator has access to",
+    )
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='agent_collaborations',
+        help_text="The user who has been granted access",
+    )
+
+    role = models.CharField(
+        max_length=20,
+        choices=CollaboratorRole.choices,
+        default=CollaboratorRole.VIEWER,
+        help_text="The level of access granted to this user",
+    )
+
+    # Audit fields
+    added_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='agent_collaborators_added',
+        help_text="The user who added this collaborator",
+    )
+    added_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['role', 'user__email']
+        unique_together = [('agent', 'user')]
+        verbose_name = "Agent Collaborator"
+        verbose_name_plural = "Agent Collaborators"
+
+    def __str__(self):
+        return f"{self.user} - {self.agent.name} ({self.role})"
+
+    @property
+    def can_view(self) -> bool:
+        """All roles can view."""
+        return True
+
+    @property
+    def can_edit(self) -> bool:
+        """Editors and admins can edit."""
+        return self.role in [CollaboratorRole.EDITOR, CollaboratorRole.ADMIN]
+
+    @property
+    def can_admin(self) -> bool:
+        """Only admins can manage collaborators."""
+        return self.role == CollaboratorRole.ADMIN
+
+
+class SystemCollaborator(models.Model):
+    """
+    Grants a user access to an agent system with a specific role.
+
+    This enables multi-user collaboration on systems beyond the single owner.
+    The owner always has full access; collaborators have role-based access.
+
+    Roles:
+    - viewer: Can view the system and test it
+    - editor: Can view and edit the system configuration
+    - admin: Can view, edit, and manage other collaborators
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    system = models.ForeignKey(
+        AgentSystem,
+        on_delete=models.CASCADE,
+        related_name='collaborators',
+        help_text="The system this collaborator has access to",
+    )
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='system_collaborations',
+        help_text="The user who has been granted access",
+    )
+
+    role = models.CharField(
+        max_length=20,
+        choices=CollaboratorRole.choices,
+        default=CollaboratorRole.VIEWER,
+        help_text="The level of access granted to this user",
+    )
+
+    # Audit fields
+    added_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='system_collaborators_added',
+        help_text="The user who added this collaborator",
+    )
+    added_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['role', 'user__email']
+        unique_together = [('system', 'user')]
+        verbose_name = "System Collaborator"
+        verbose_name_plural = "System Collaborators"
+
+    def __str__(self):
+        return f"{self.user} - {self.system.name} ({self.role})"
+
+    @property
+    def can_view(self) -> bool:
+        """All roles can view."""
+        return True
+
+    @property
+    def can_edit(self) -> bool:
+        """Editors and admins can edit."""
+        return self.role in [CollaboratorRole.EDITOR, CollaboratorRole.ADMIN]
+
+    @property
+    def can_admin(self) -> bool:
+        """Only admins can manage collaborators."""
+        return self.role == CollaboratorRole.ADMIN

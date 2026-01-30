@@ -165,7 +165,8 @@ class AbstractAgentConversation(models.Model):
         from django_agent_runtime.models.base import RunStatus
 
         # Get runs in chronological order
-        runs_qs = self.runs.order_by("created_at")
+        # Exclude superseded runs - these were replaced by edit/retry
+        runs_qs = self.runs.filter(superseded_by__isnull=True).order_by("created_at")
 
         if not include_failed_runs:
             runs_qs = runs_qs.filter(status=RunStatus.SUCCEEDED)
@@ -375,6 +376,19 @@ class AbstractAgentRun(models.Model):
     # Extensibility
     metadata = models.JSONField(default=dict, blank=True)
 
+    # Superseding (for edit/retry functionality)
+    # When a user edits or retries a message, the old run is marked as superseded
+    # by the new run. This allows get_message_history() to return only the
+    # canonical conversation history.
+    superseded_by = models.ForeignKey(
+        "self",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="supersedes",
+        help_text="If set, this run was superseded by another run (edit/retry)",
+    )
+
     class Meta:
         abstract = True
         ordering = ["-created_at"]
@@ -472,6 +486,203 @@ class AbstractAgentCheckpoint(models.Model):
 
     def __str__(self):
         return f"Checkpoint {self.seq}"
+
+
+class TaskState(models.TextChoices):
+    """Status choices for tasks."""
+
+    NOT_STARTED = "not_started", "Not Started"
+    IN_PROGRESS = "in_progress", "In Progress"
+    COMPLETE = "complete", "Complete"
+    CANCELLED = "cancelled", "Cancelled"
+
+
+class AbstractAgentTaskList(models.Model):
+    """
+    Abstract model for a user's task list.
+
+    Task lists are per-user (not per-conversation) and track the agent's
+    progress on complex, long-running work. Each user has one active task list.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    # Owner - task lists are per-user
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="agent_task_lists",
+    )
+
+    # Task list metadata
+    name = models.CharField(
+        max_length=255,
+        default="Current Task List",
+        help_text="Name of the task list",
+    )
+
+    # Optional association with a conversation (for context)
+    # Note: Task list is per-user, but can be associated with a conversation
+    # for context about what work is being tracked
+    conversation = models.ForeignKey(
+        "AgentConversation",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="task_lists",
+        help_text="Optional conversation this task list is associated with",
+    )
+
+    # Timestamps
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    # Extensibility
+    metadata = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        abstract = True
+        ordering = ["-updated_at"]
+        verbose_name = "Agent Task List"
+        verbose_name_plural = "Agent Task Lists"
+
+    def __str__(self):
+        return f"{self.name} ({self.user})"
+
+    def get_tasks_tree(self) -> list[dict]:
+        """
+        Get tasks as a nested tree structure.
+
+        Returns a list of root tasks, each with a 'children' key containing
+        nested subtasks.
+        """
+        tasks = list(self.tasks.all().order_by("created_at"))
+        task_map = {task.id: {"task": task, "children": []} for task in tasks}
+
+        roots = []
+        for task in tasks:
+            node = task_map[task.id]
+            if task.parent_id and task.parent_id in task_map:
+                task_map[task.parent_id]["children"].append(node)
+            else:
+                roots.append(node)
+
+        return roots
+
+    def get_progress(self) -> dict:
+        """
+        Get progress statistics for the task list.
+
+        Returns:
+            {
+                "total": int,
+                "completed": int,
+                "in_progress": int,
+                "not_started": int,
+                "cancelled": int,
+                "percent_complete": float,
+            }
+        """
+        tasks = self.tasks.all()
+        total = tasks.count()
+        completed = tasks.filter(state=TaskState.COMPLETE).count()
+        in_progress = tasks.filter(state=TaskState.IN_PROGRESS).count()
+        not_started = tasks.filter(state=TaskState.NOT_STARTED).count()
+        cancelled = tasks.filter(state=TaskState.CANCELLED).count()
+
+        return {
+            "total": total,
+            "completed": completed,
+            "in_progress": in_progress,
+            "not_started": not_started,
+            "cancelled": cancelled,
+            "percent_complete": (completed / total * 100) if total > 0 else 0,
+        }
+
+
+class AbstractAgentTask(models.Model):
+    """
+    Abstract model for a single task in a task list.
+
+    Tasks can be nested (parent_id) to create hierarchical task structures.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    # Parent task list
+    # Note: concrete model defines the FK to avoid circular imports
+    # task_list = models.ForeignKey(...)
+
+    # Task content
+    name = models.CharField(
+        max_length=500,
+        help_text="Short name/title of the task",
+    )
+    description = models.TextField(
+        blank=True,
+        default="",
+        help_text="Detailed description of the task",
+    )
+
+    # State
+    state = models.CharField(
+        max_length=20,
+        choices=TaskState.choices,
+        default=TaskState.NOT_STARTED,
+        db_index=True,
+    )
+
+    # Hierarchy - tasks can have subtasks
+    parent = models.ForeignKey(
+        "self",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="subtasks",
+        help_text="Parent task (for nested tasks)",
+    )
+
+    # Ordering within the list/parent
+    order = models.PositiveIntegerField(
+        default=0,
+        help_text="Order within the task list or parent task",
+    )
+
+    # Timestamps
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    completed_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When the task was marked complete",
+    )
+
+    # Extensibility
+    metadata = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        abstract = True
+        ordering = ["order", "created_at"]
+        verbose_name = "Agent Task"
+        verbose_name_plural = "Agent Tasks"
+
+    def __str__(self):
+        state_icon = {
+            TaskState.NOT_STARTED: "[ ]",
+            TaskState.IN_PROGRESS: "[/]",
+            TaskState.COMPLETE: "[x]",
+            TaskState.CANCELLED: "[-]",
+        }.get(self.state, "[ ]")
+        return f"{state_icon} {self.name}"
+
+    def save(self, *args, **kwargs):
+        # Auto-set completed_at when state changes to COMPLETE
+        if self.state == TaskState.COMPLETE and not self.completed_at:
+            from django.utils import timezone
+            self.completed_at = timezone.now()
+        elif self.state != TaskState.COMPLETE:
+            self.completed_at = None
+        super().save(*args, **kwargs)
 
 
 class AbstractAgentFile(models.Model):

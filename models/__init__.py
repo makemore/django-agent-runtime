@@ -16,6 +16,9 @@ from django_agent_runtime.models.base import (
     AbstractAgentEvent,
     AbstractAgentCheckpoint,
     AbstractAgentFile,
+    AbstractAgentTaskList,
+    AbstractAgentTask,
+    TaskState,
 )
 from django_agent_runtime.models.concrete import (
     AgentConversation,
@@ -23,6 +26,8 @@ from django_agent_runtime.models.concrete import (
     AgentEvent,
     AgentCheckpoint,
     AgentFile,
+    AgentTaskList,
+    AgentTask,
 )
 
 # Import persistence models so Django can discover them
@@ -55,6 +60,10 @@ from django_agent_runtime.models.definitions import (
     # Spec document models
     SpecDocument,
     SpecDocumentVersion,
+    # Collaborator models for multi-user access
+    CollaboratorRole,
+    AgentCollaborator,
+    SystemCollaborator,
 )
 
 # Import step execution models
@@ -72,12 +81,17 @@ __all__ = [
     "AbstractAgentEvent",
     "AbstractAgentCheckpoint",
     "AbstractAgentFile",
+    "AbstractAgentTaskList",
+    "AbstractAgentTask",
+    "TaskState",
     # Concrete models (default implementation)
     "AgentConversation",
     "AgentRun",
     "AgentEvent",
     "AgentCheckpoint",
     "AgentFile",
+    "AgentTaskList",
+    "AgentTask",
     # Persistence models
     "Memory",
     "PersistenceConversation",
@@ -105,6 +119,10 @@ __all__ = [
     # Spec document models
     "SpecDocument",
     "SpecDocumentVersion",
+    # Collaborator models for multi-user access
+    "CollaboratorRole",
+    "AgentCollaborator",
+    "SystemCollaborator",
     # Step execution models
     "StepCheckpoint",
     "StepEvent",

@@ -21,6 +21,7 @@ from django_agent_runtime.api.views import (
     BaseAgentConversationViewSet,
     BaseAgentFileViewSet,
     BaseAgentRunViewSet,
+    BaseAgentTaskListViewSet,
     BaseModelsViewSet,
     sync_event_stream,
 )
@@ -32,6 +33,7 @@ router = DefaultRouter()
 router.register(r"conversations", BaseAgentConversationViewSet, basename="conversation")
 router.register(r"files", BaseAgentFileViewSet, basename="file")
 router.register(r"runs", BaseAgentRunViewSet, basename="run")
+router.register(r"tasks", BaseAgentTaskListViewSet, basename="task")
 router.register(r"models", BaseModelsViewSet, basename="models")
 
 urlpatterns = [

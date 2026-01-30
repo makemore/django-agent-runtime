@@ -4,7 +4,13 @@ DRF serializers for agent runtime API.
 
 from rest_framework import serializers
 
-from django_agent_runtime.models import AgentRun, AgentConversation, AgentEvent
+from django_agent_runtime.models import (
+    AgentRun,
+    AgentConversation,
+    AgentEvent,
+    AgentTaskList,
+    AgentTask,
+)
 
 
 class AgentConversationSerializer(serializers.ModelSerializer):
@@ -141,6 +147,16 @@ class AgentRunCreateSerializer(serializers.Serializer):
     metadata = serializers.DictField(
         required=False,
         default=dict,
+    )
+    # Edit/Retry support: mark old runs as superseded
+    supersede_from_message_index = serializers.IntegerField(
+        required=False,
+        allow_null=True,
+        min_value=0,
+        help_text=(
+            "If set, marks all runs that contributed messages at or after this index "
+            "as superseded by the new run. Used for edit/retry functionality."
+        ),
     )
 
 
@@ -294,3 +310,91 @@ class AgentFileUploadSerializer(serializers.Serializer):
                 )
 
         return value
+
+
+# =============================================================================
+# Task List Serializers
+# =============================================================================
+
+
+class AgentTaskSerializer(serializers.ModelSerializer):
+    """Serializer for AgentTask."""
+
+    class Meta:
+        model = AgentTask
+        fields = [
+            "id",
+            "task_list_id",
+            "name",
+            "description",
+            "state",
+            "parent_id",
+            "order",
+            "created_at",
+            "updated_at",
+            "completed_at",
+            "metadata",
+        ]
+        read_only_fields = ["id", "created_at", "updated_at", "completed_at"]
+
+
+class AgentTaskCreateSerializer(serializers.Serializer):
+    """Serializer for creating a new task."""
+
+    name = serializers.CharField(max_length=500)
+    description = serializers.CharField(required=False, default="", allow_blank=True)
+    state = serializers.ChoiceField(
+        required=False,
+        default="not_started",
+        choices=["not_started", "in_progress", "complete", "cancelled"],
+    )
+    parent_id = serializers.UUIDField(required=False, allow_null=True)
+    order = serializers.IntegerField(required=False, default=0)
+    metadata = serializers.DictField(required=False, default=dict)
+
+
+class AgentTaskUpdateSerializer(serializers.Serializer):
+    """Serializer for updating a task."""
+
+    name = serializers.CharField(max_length=500, required=False)
+    description = serializers.CharField(required=False, allow_blank=True)
+    state = serializers.ChoiceField(
+        required=False,
+        choices=["not_started", "in_progress", "complete", "cancelled"],
+    )
+    parent_id = serializers.UUIDField(required=False, allow_null=True)
+    order = serializers.IntegerField(required=False)
+    metadata = serializers.DictField(required=False)
+
+
+class AgentTaskListSerializer(serializers.ModelSerializer):
+    """Serializer for AgentTaskList."""
+
+    tasks = AgentTaskSerializer(many=True, read_only=True)
+    progress = serializers.SerializerMethodField()
+
+    class Meta:
+        model = AgentTaskList
+        fields = [
+            "id",
+            "name",
+            "conversation_id",
+            "created_at",
+            "updated_at",
+            "metadata",
+            "tasks",
+            "progress",
+        ]
+        read_only_fields = ["id", "created_at", "updated_at", "tasks", "progress"]
+
+    def get_progress(self, obj):
+        """Get progress statistics for the task list."""
+        return obj.get_progress()
+
+
+class AgentTaskListCreateSerializer(serializers.Serializer):
+    """Serializer for creating a new task list."""
+
+    name = serializers.CharField(max_length=255, required=False, default="Current Task List")
+    conversation_id = serializers.UUIDField(required=False, allow_null=True)
+    metadata = serializers.DictField(required=False, default=dict)

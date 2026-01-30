@@ -11,6 +11,7 @@ A production-ready Django app for AI agent execution. Provides everything you ne
 
 | Version | Date | Changes |
 |---------|------|---------|
+| **0.7.6** | 2026-01-30 | **Multi-User Access Control** - Collaborator system for agents/systems, user search API supports both email and username-based User models, permission inheritance from systems to agents |
 | **0.7.0** | 2026-01-28 | **Shared Memory & Debug** - Shared memory for multi-agent systems, spec-to-documents migration, debug mode syncs to core for cost/context tracking |
 | **0.6.0** | 2026-01-28 | **File Ingestion** - File storage backend (local/S3/GCS), AgentFile model, file_config per agent, upload endpoints, configurable size limits (100MB default) |
 | **0.5.0** | 2026-01-24 | RAG module, pgvector integration, multi-agent support, database runtime, models config |

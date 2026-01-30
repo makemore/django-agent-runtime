@@ -13,6 +13,8 @@ from django_agent_runtime.models.base import (
     AbstractAgentEvent,
     AbstractAgentCheckpoint,
     AbstractAgentFile,
+    AbstractAgentTaskList,
+    AbstractAgentTask,
 )
 
 
@@ -166,3 +168,34 @@ class AgentFile(AbstractAgentFile):
     class Meta(AbstractAgentFile.Meta):
         abstract = False
         db_table = "agent_runtime_file"
+
+
+class AgentTaskList(AbstractAgentTaskList):
+    """
+    Concrete implementation of agent task list.
+
+    Task lists are per-user and track the agent's progress on complex work.
+    """
+
+    class Meta(AbstractAgentTaskList.Meta):
+        abstract = False
+        db_table = "agent_runtime_task_list"
+
+
+class AgentTask(AbstractAgentTask):
+    """
+    Concrete implementation of agent task.
+
+    Individual tasks within a task list, supporting nested hierarchies.
+    """
+
+    task_list = models.ForeignKey(
+        AgentTaskList,
+        on_delete=models.CASCADE,
+        related_name="tasks",
+        help_text="The task list this task belongs to",
+    )
+
+    class Meta(AbstractAgentTask.Meta):
+        abstract = False
+        db_table = "agent_runtime_task"

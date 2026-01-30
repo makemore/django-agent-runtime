@@ -22,7 +22,7 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.parsers import MultiPartParser, FormParser
 
-from django_agent_runtime.models import AgentRun, AgentConversation, AgentEvent, AgentFile
+from django_agent_runtime.models import AgentRun, AgentConversation, AgentEvent, AgentFile, AgentTaskList, AgentTask
 from django_agent_runtime.storage import get_storage_backend
 from django_agent_runtime.models.base import RunStatus
 from django_agent_runtime.api.serializers import (
@@ -34,6 +34,11 @@ from django_agent_runtime.api.serializers import (
     AgentEventSerializer,
     AgentFileSerializer,
     AgentFileUploadSerializer,
+    AgentTaskListSerializer,
+    AgentTaskListCreateSerializer,
+    AgentTaskSerializer,
+    AgentTaskCreateSerializer,
+    AgentTaskUpdateSerializer,
 )
 from django_agent_runtime.api.permissions import get_anonymous_session
 from django_agent_runtime.conf import runtime_settings, get_hook
@@ -222,6 +227,11 @@ class BaseAgentRunViewSet(viewsets.ModelViewSet):
             metadata=metadata,
         )
 
+        # Handle edit/retry: mark old runs as superseded
+        supersede_from_index = data.get("supersede_from_message_index")
+        if supersede_from_index is not None and conversation:
+            self._supersede_runs_from_index(conversation, run, supersede_from_index)
+
         # Enqueue to Redis if using Redis queue
         if settings.QUEUE_BACKEND == "redis_streams":
             asyncio.run(self._enqueue_to_redis(run))
@@ -239,6 +249,56 @@ class BaseAgentRunViewSet(viewsets.ModelViewSet):
         queue = RedisStreamsQueue(redis_url=settings.REDIS_URL)
         await queue.enqueue(run.id, run.agent_key)
         await queue.close()
+
+    def _supersede_runs_from_index(
+        self, conversation: AgentConversation, new_run: AgentRun, from_message_index: int
+    ):
+        """
+        Mark runs as superseded when edit/retry is used.
+
+        This finds all runs that contributed messages at or after the given index
+        and marks them as superseded by the new run. This ensures get_message_history()
+        returns only the canonical conversation history.
+
+        Args:
+            conversation: The conversation containing the runs
+            new_run: The new run that supersedes the old ones
+            from_message_index: The message index from which to supersede
+        """
+        # Get all non-superseded runs in chronological order
+        runs = list(
+            conversation.runs.filter(superseded_by__isnull=True)
+            .exclude(id=new_run.id)
+            .order_by("created_at")
+        )
+
+        # Track cumulative message count to find which runs to supersede
+        cumulative_message_count = 0
+        runs_to_supersede = []
+
+        for run in runs:
+            # Count messages contributed by this run
+            input_messages = (run.input or {}).get("messages", [])
+            output_messages = (run.output or {}).get("final_messages", [])
+
+            run_start_index = cumulative_message_count
+            run_message_count = len(input_messages) + len(output_messages)
+
+            # If this run's messages start at or after the supersede index,
+            # or if the supersede index falls within this run's messages,
+            # mark it as superseded
+            if run_start_index >= from_message_index or (
+                run_start_index < from_message_index
+                and run_start_index + run_message_count > from_message_index
+            ):
+                runs_to_supersede.append(run)
+
+            cumulative_message_count += run_message_count
+
+        # Mark all identified runs as superseded
+        if runs_to_supersede:
+            run_ids = [r.id for r in runs_to_supersede]
+            AgentRun.objects.filter(id__in=run_ids).update(superseded_by=new_run)
 
     @action(detail=True, methods=["post"])
     def cancel(self, request, pk=None):
@@ -660,3 +720,263 @@ class BaseAgentFileViewSet(viewsets.ModelViewSet):
             pass  # Continue even if storage delete fails
 
         return super().destroy(request, *args, **kwargs)
+
+
+class BaseAgentTaskListViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet for managing agent task lists.
+
+    Task lists are per-user and track the agent's progress on complex work.
+    Each user typically has one active task list.
+
+    Endpoints:
+    - GET /tasks/ - Get the current user's task list (creates one if none exists)
+    - POST /tasks/ - Create a new task list
+    - GET /tasks/{id}/ - Get a specific task list
+    - PUT /tasks/{id}/ - Update a task list
+    - DELETE /tasks/{id}/ - Delete a task list
+    - POST /tasks/{id}/add_task/ - Add a task to the list
+    - PUT /tasks/{id}/update_task/{task_id}/ - Update a task
+    - DELETE /tasks/{id}/remove_task/{task_id}/ - Remove a task
+    - POST /tasks/{id}/reorganize/ - Reorganize tasks (reorder, reparent)
+    """
+
+    serializer_class = AgentTaskListSerializer
+
+    def get_serializer_class(self):
+        if self.action == "create":
+            return AgentTaskListCreateSerializer
+        return AgentTaskListSerializer
+
+    def get_queryset(self):
+        """Get task lists for the current user."""
+        if self.request.user and self.request.user.is_authenticated:
+            return AgentTaskList.objects.filter(user=self.request.user)
+        return AgentTaskList.objects.none()
+
+    def list(self, request, *args, **kwargs):
+        """
+        Get the current user's task list.
+
+        If no task list exists, creates one automatically.
+        Returns a single task list (not a paginated list).
+        """
+        if not request.user or not request.user.is_authenticated:
+            return Response(
+                {"error": "Authentication required"},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+
+        # Get or create the user's task list
+        task_list, created = AgentTaskList.objects.get_or_create(
+            user=request.user,
+            defaults={"name": "Current Task List"},
+        )
+
+        serializer = self.get_serializer(task_list)
+        return Response(serializer.data)
+
+    def create(self, request, *args, **kwargs):
+        """Create a new task list for the user."""
+        if not request.user or not request.user.is_authenticated:
+            return Response(
+                {"error": "Authentication required"},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+
+        serializer = AgentTaskListCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        # Get conversation if provided
+        conversation = None
+        if serializer.validated_data.get("conversation_id"):
+            try:
+                conversation = AgentConversation.objects.get(
+                    id=serializer.validated_data["conversation_id"],
+                    user=request.user,
+                )
+            except AgentConversation.DoesNotExist:
+                pass
+
+        task_list = AgentTaskList.objects.create(
+            user=request.user,
+            name=serializer.validated_data.get("name", "Current Task List"),
+            conversation=conversation,
+            metadata=serializer.validated_data.get("metadata", {}),
+        )
+
+        return Response(
+            AgentTaskListSerializer(task_list).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+    @action(detail=True, methods=["post"])
+    def add_task(self, request, pk=None):
+        """Add a task to the task list."""
+        task_list = self.get_object()
+
+        serializer = AgentTaskCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        # Validate parent if provided
+        parent = None
+        if data.get("parent_id"):
+            try:
+                parent = AgentTask.objects.get(
+                    id=data["parent_id"],
+                    task_list=task_list,
+                )
+            except AgentTask.DoesNotExist:
+                return Response(
+                    {"error": "Parent task not found"},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+
+        task = AgentTask.objects.create(
+            task_list=task_list,
+            name=data["name"],
+            description=data.get("description", ""),
+            state=data.get("state", "not_started"),
+            parent=parent,
+            order=data.get("order", 0),
+            metadata=data.get("metadata", {}),
+        )
+
+        # Update task list timestamp
+        task_list.save()
+
+        return Response(
+            AgentTaskSerializer(task).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+    @action(detail=True, methods=["put"], url_path="update_task/(?P<task_id>[^/.]+)")
+    def update_task(self, request, pk=None, task_id=None):
+        """Update a task in the task list."""
+        task_list = self.get_object()
+
+        try:
+            task = AgentTask.objects.get(id=task_id, task_list=task_list)
+        except AgentTask.DoesNotExist:
+            return Response(
+                {"error": "Task not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        serializer = AgentTaskUpdateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        # Update fields if provided
+        if "name" in data:
+            task.name = data["name"]
+        if "description" in data:
+            task.description = data["description"]
+        if "state" in data:
+            task.state = data["state"]
+        if "order" in data:
+            task.order = data["order"]
+        if "metadata" in data:
+            task.metadata = data["metadata"]
+
+        # Handle parent change
+        if "parent_id" in data:
+            if data["parent_id"] is None:
+                task.parent = None
+            else:
+                try:
+                    parent = AgentTask.objects.get(
+                        id=data["parent_id"],
+                        task_list=task_list,
+                    )
+                    # Prevent circular references
+                    if parent.id == task.id:
+                        return Response(
+                            {"error": "Task cannot be its own parent"},
+                            status=status.HTTP_400_BAD_REQUEST,
+                        )
+                    task.parent = parent
+                except AgentTask.DoesNotExist:
+                    return Response(
+                        {"error": "Parent task not found"},
+                        status=status.HTTP_404_NOT_FOUND,
+                    )
+
+        task.save()
+        task_list.save()  # Update timestamp
+
+        return Response(AgentTaskSerializer(task).data)
+
+    @action(detail=True, methods=["delete"], url_path="remove_task/(?P<task_id>[^/.]+)")
+    def remove_task(self, request, pk=None, task_id=None):
+        """Remove a task from the task list."""
+        task_list = self.get_object()
+
+        try:
+            task = AgentTask.objects.get(id=task_id, task_list=task_list)
+        except AgentTask.DoesNotExist:
+            return Response(
+                {"error": "Task not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        task.delete()
+        task_list.save()  # Update timestamp
+
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    @action(detail=True, methods=["post"])
+    def reorganize(self, request, pk=None):
+        """
+        Reorganize tasks in the task list.
+
+        Accepts a list of task updates with new order and parent_id values.
+        Format: {"tasks": [{"id": "...", "order": 0, "parent_id": null}, ...]}
+        """
+        task_list = self.get_object()
+
+        tasks_data = request.data.get("tasks", [])
+        if not tasks_data:
+            return Response(
+                {"error": "No tasks provided"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Validate all task IDs exist
+        task_ids = [t.get("id") for t in tasks_data]
+        existing_tasks = {
+            str(t.id): t
+            for t in AgentTask.objects.filter(id__in=task_ids, task_list=task_list)
+        }
+
+        if len(existing_tasks) != len(task_ids):
+            return Response(
+                {"error": "Some tasks not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # Update each task
+        for task_data in tasks_data:
+            task = existing_tasks[task_data["id"]]
+            if "order" in task_data:
+                task.order = task_data["order"]
+            if "parent_id" in task_data:
+                if task_data["parent_id"] is None:
+                    task.parent = None
+                elif task_data["parent_id"] in existing_tasks:
+                    task.parent = existing_tasks[task_data["parent_id"]]
+            task.save()
+
+        task_list.save()  # Update timestamp
+
+        return Response(AgentTaskListSerializer(task_list).data)
+
+    @action(detail=True, methods=["post"])
+    def clear(self, request, pk=None):
+        """Clear all tasks from the task list."""
+        task_list = self.get_object()
+        task_list.tasks.all().delete()
+        task_list.save()
+
+        return Response(AgentTaskListSerializer(task_list).data)
