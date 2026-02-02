@@ -50,6 +50,9 @@ class AgentRuntimeSettings:
     RETRY_BACKOFF_BASE: float = 2.0
     RETRY_BACKOFF_MAX: int = 300  # 5 minutes max backoff
 
+    # Agentic loop configuration
+    MAX_ITERATIONS: int = 50  # Maximum iterations for tool-calling loops
+
     # Concurrency
     DEFAULT_PROCESSES: int = 1
     DEFAULT_CONCURRENCY: int = 10  # async tasks per process

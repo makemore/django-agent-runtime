@@ -21,12 +21,18 @@ class DjangoAgentRuntimeConfig(AppConfig):
         - Configure core runtime with Django settings
         """
         from django_agent_runtime.runtime.registry import autodiscover_runtimes
-        from django_agent_runtime.conf import is_debug
+        from django_agent_runtime.conf import is_debug, runtime_settings
         from agent_runtime_core import configure as configure_core
 
-        # Sync Django's debug setting to core runtime
-        # This enables cost/context tracking in debug mode
-        configure_core(debug=is_debug())
+        # Get Django settings
+        settings = runtime_settings()
+
+        # Sync Django settings to core runtime
+        # This enables cost/context tracking in debug mode and sets max_iterations
+        configure_core(
+            debug=is_debug(),
+            max_iterations=settings.MAX_ITERATIONS,
+        )
 
         # Auto-discover runtimes from entry points and settings
         autodiscover_runtimes()

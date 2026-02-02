@@ -361,10 +361,12 @@ def sync_event_stream(request, run_id: str):
     user = request.user if hasattr(request, 'user') else None
 
     # Support token auth via query param for SSE (browsers can't set headers on EventSource)
-    if (not user or not user.is_authenticated) and request.GET.get('token'):
+    # Check both 'token' and 'anonymous_token' params - some widgets use 'anonymous_token' for all auth
+    token_value = request.GET.get('token') or request.GET.get('anonymous_token')
+    if (not user or not user.is_authenticated) and token_value:
         from rest_framework.authtoken.models import Token
         try:
-            token = Token.objects.select_related('user').get(key=request.GET.get('token'))
+            token = Token.objects.select_related('user').get(key=token_value)
             user = token.user
         except Token.DoesNotExist:
             pass

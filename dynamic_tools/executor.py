@@ -228,12 +228,20 @@ class DynamicToolExecutor:
         return func
 
     def _import_function(self, function_path: str) -> Callable:
-        """Import a function from its path."""
-        parts = function_path.rsplit('.', 1)
-        if len(parts) != 2:
-            raise ImportError(f"Invalid function path: {function_path}")
+        """Import a function from its path.
 
-        module_path, func_name = parts
+        Supports two formats:
+        - Colon format: module.path:function_name (used by builtin_ref)
+        - Dot format: module.path.function_name (used by DynamicTool)
+        """
+        # Handle colon separator (used by builtin_ref format)
+        if ':' in function_path:
+            module_path, func_name = function_path.rsplit(':', 1)
+        else:
+            parts = function_path.rsplit('.', 1)
+            if len(parts) != 2:
+                raise ImportError(f"Invalid function path: {function_path}")
+            module_path, func_name = parts
 
         # Handle class methods (module.Class.method)
         try:
