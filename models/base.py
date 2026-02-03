@@ -242,12 +242,17 @@ def _normalize_message(msg: dict) -> dict | None:
 
     Ensures consistent structure regardless of how it was stored.
     Returns None for messages that should be filtered out (e.g., empty content
-    without tool_calls).
+    without tool_calls, or system messages which should not be exposed to frontend).
     """
     role = msg.get("role", "user")
     content = msg.get("content")
     tool_calls = msg.get("tool_calls")
     tool_call_id = msg.get("tool_call_id")
+
+    # Filter out system messages - these contain internal prompts and should
+    # not be exposed to the frontend
+    if role == "system":
+        return None
 
     # Skip messages with empty/None content unless they have tool_calls or are tool results
     # Anthropic requires non-empty content for all messages except:

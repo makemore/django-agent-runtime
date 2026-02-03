@@ -35,6 +35,16 @@ from django_agent_runtime.models import (
     PersistenceTaskList,
     PersistenceTask,
     Preferences,
+    # Knowledge store models
+    Fact,
+    Summary,
+    Embedding,
+    # Audit store models
+    AuditEntry,
+    ErrorRecord,
+    PerformanceMetric,
+    # Shared memory models
+    SharedMemory,
     # Step execution models
     StepCheckpoint,
     StepEvent,
@@ -701,3 +711,271 @@ class StepEventAdmin(admin.ModelAdmin):
     search_fields = ["checkpoint__step_name"]
     readonly_fields = ["id", "timestamp"]
     raw_id_fields = ["checkpoint"]
+
+
+# =============================================================================
+# Knowledge Store Admin
+# =============================================================================
+
+
+@admin.register(Fact)
+class FactAdmin(admin.ModelAdmin):
+    """Admin for Fact - learned facts about users, projects, or context."""
+
+    list_display = ["key", "fact_type", "user", "conversation_scope", "confidence", "created_at"]
+    list_filter = ["fact_type", "created_at"]
+    search_fields = ["key", "source"]
+    readonly_fields = ["id", "created_at", "updated_at"]
+    raw_id_fields = ["user"]
+
+    fieldsets = (
+        (None, {
+            "fields": ("id", "user", "key", "value", "fact_type")
+        }),
+        ("Scope", {
+            "fields": ("conversation_id",),
+            "description": "If conversation_id is set, this fact is scoped to that conversation. Otherwise it's global.",
+        }),
+        ("Metadata", {
+            "fields": ("confidence", "source", "expires_at", "metadata"),
+        }),
+        ("Timestamps", {
+            "fields": ("created_at", "updated_at"),
+        }),
+    )
+
+    def conversation_scope(self, obj):
+        """Display whether fact is global or conversation-scoped."""
+        if obj.conversation_id:
+            return format_html(
+                '<span style="color: #007bff;">Conv: {}</span>',
+                str(obj.conversation_id)[:8]
+            )
+        return format_html('<span style="color: #28a745;">Global</span>')
+    conversation_scope.short_description = "Scope"
+
+
+@admin.register(Summary)
+class SummaryAdmin(admin.ModelAdmin):
+    """Admin for Summary - conversation summaries."""
+
+    list_display = ["id", "user", "content_preview", "conversation_id", "created_at"]
+    list_filter = ["created_at"]
+    search_fields = ["content"]
+    readonly_fields = ["id", "created_at"]
+    raw_id_fields = ["user"]
+
+    fieldsets = (
+        (None, {
+            "fields": ("id", "user", "content")
+        }),
+        ("Scope", {
+            "fields": ("conversation_id", "conversation_ids", "start_time", "end_time"),
+        }),
+        ("Metadata", {
+            "fields": ("metadata", "created_at"),
+        }),
+    )
+
+    def content_preview(self, obj):
+        """Show truncated content."""
+        return obj.content[:80] + "..." if len(obj.content) > 80 else obj.content
+    content_preview.short_description = "Content"
+
+
+@admin.register(Embedding)
+class EmbeddingAdmin(admin.ModelAdmin):
+    """Admin for Embedding - vector embeddings for semantic search."""
+
+    list_display = ["id", "user", "content_preview", "content_type", "model", "dimensions", "created_at"]
+    list_filter = ["content_type", "model", "created_at"]
+    search_fields = ["content"]
+    readonly_fields = ["id", "created_at"]
+    raw_id_fields = ["user"]
+
+    fieldsets = (
+        (None, {
+            "fields": ("id", "user", "content", "content_type")
+        }),
+        ("Vector", {
+            "fields": ("vector", "model", "dimensions"),
+            "classes": ("collapse",),
+        }),
+        ("References", {
+            "fields": ("source_id", "metadata"),
+        }),
+        ("Timestamps", {
+            "fields": ("created_at",),
+        }),
+    )
+
+    def content_preview(self, obj):
+        """Show truncated content."""
+        return obj.content[:60] + "..." if len(obj.content) > 60 else obj.content
+    content_preview.short_description = "Content"
+
+
+# =============================================================================
+# Audit Store Admin
+# =============================================================================
+
+
+@admin.register(AuditEntry)
+class AuditEntryAdmin(admin.ModelAdmin):
+    """Admin for AuditEntry - audit log entries."""
+
+    list_display = ["event_type", "action", "user", "agent_key", "actor_type", "timestamp"]
+    list_filter = ["event_type", "actor_type", "timestamp"]
+    search_fields = ["action", "agent_key", "request_id"]
+    readonly_fields = ["id", "timestamp"]
+    raw_id_fields = ["user"]
+
+    fieldsets = (
+        (None, {
+            "fields": ("id", "user", "event_type", "action", "timestamp")
+        }),
+        ("Context", {
+            "fields": ("conversation_id", "run_id", "agent_key"),
+        }),
+        ("Actor", {
+            "fields": ("actor_type", "actor_id"),
+        }),
+        ("Request Tracking", {
+            "fields": ("request_id", "parent_event_id"),
+        }),
+        ("Details", {
+            "fields": ("details", "metadata"),
+            "classes": ("collapse",),
+        }),
+    )
+
+
+@admin.register(ErrorRecord)
+class ErrorRecordAdmin(admin.ModelAdmin):
+    """Admin for ErrorRecord - error records for debugging."""
+
+    list_display = ["severity_badge", "error_type", "user", "agent_key", "resolved", "timestamp"]
+    list_filter = ["severity", "resolved", "timestamp"]
+    search_fields = ["error_type", "message", "agent_key"]
+    readonly_fields = ["id", "timestamp"]
+    raw_id_fields = ["user"]
+
+    fieldsets = (
+        (None, {
+            "fields": ("id", "user", "severity", "error_type", "timestamp")
+        }),
+        ("Error Details", {
+            "fields": ("message", "stack_trace"),
+        }),
+        ("Context", {
+            "fields": ("conversation_id", "run_id", "agent_key", "context"),
+        }),
+        ("Resolution", {
+            "fields": ("resolved", "resolved_at", "resolution_notes"),
+        }),
+        ("Metadata", {
+            "fields": ("metadata",),
+            "classes": ("collapse",),
+        }),
+    )
+
+    def severity_badge(self, obj):
+        """Display severity as a colored badge."""
+        colors = {
+            "debug": "#6c757d",
+            "info": "#17a2b8",
+            "warning": "#ffc107",
+            "error": "#dc3545",
+            "critical": "#721c24",
+        }
+        color = colors.get(obj.severity, "#6c757d")
+        text_color = "white" if obj.severity in ("error", "critical") else "black"
+        return format_html(
+            '<span style="background-color: {}; color: {}; padding: 2px 8px; '
+            'border-radius: 4px; font-size: 11px;">{}</span>',
+            color,
+            text_color,
+            obj.severity.upper(),
+        )
+    severity_badge.short_description = "Severity"
+
+
+@admin.register(PerformanceMetric)
+class PerformanceMetricAdmin(admin.ModelAdmin):
+    """Admin for PerformanceMetric - performance metrics for monitoring."""
+
+    list_display = ["name", "value", "unit", "user", "agent_key", "timestamp"]
+    list_filter = ["name", "timestamp"]
+    search_fields = ["name", "agent_key"]
+    readonly_fields = ["id", "timestamp"]
+    raw_id_fields = ["user"]
+
+    fieldsets = (
+        (None, {
+            "fields": ("id", "user", "name", "value", "unit", "timestamp")
+        }),
+        ("Context", {
+            "fields": ("conversation_id", "run_id", "agent_key"),
+        }),
+        ("Tags & Metadata", {
+            "fields": ("tags", "metadata"),
+            "classes": ("collapse",),
+        }),
+    )
+
+
+# =============================================================================
+# Shared Memory Admin
+# =============================================================================
+
+
+@admin.register(SharedMemory)
+class SharedMemoryAdmin(admin.ModelAdmin):
+    """Admin for SharedMemory - shared memory storage with semantic keys."""
+
+    list_display = ["key", "scope_badge", "user", "source", "confidence", "is_expired_display", "updated_at"]
+    list_filter = ["scope", "source", "created_at"]
+    search_fields = ["key", "source", "system_id"]
+    readonly_fields = ["id", "created_at", "updated_at"]
+    raw_id_fields = ["user"]
+
+    fieldsets = (
+        (None, {
+            "fields": ("id", "user", "key", "value")
+        }),
+        ("Scope", {
+            "fields": ("scope", "conversation_id", "system_id"),
+            "description": "CONVERSATION: ephemeral, USER: persists across conversations, SYSTEM: shared across agents",
+        }),
+        ("Metadata", {
+            "fields": ("source", "confidence", "expires_at", "metadata"),
+        }),
+        ("Timestamps", {
+            "fields": ("created_at", "updated_at"),
+        }),
+    )
+
+    def scope_badge(self, obj):
+        """Display scope as a colored badge."""
+        colors = {
+            "conversation": "#6c757d",
+            "user": "#007bff",
+            "system": "#28a745",
+        }
+        color = colors.get(obj.scope, "#6c757d")
+        return format_html(
+            '<span style="background-color: {}; color: white; padding: 2px 8px; '
+            'border-radius: 4px; font-size: 11px;">{}</span>',
+            color,
+            obj.scope.upper(),
+        )
+    scope_badge.short_description = "Scope"
+
+    def is_expired_display(self, obj):
+        """Display whether memory is expired."""
+        if obj.expires_at is None:
+            return "-"
+        if obj.is_expired:
+            return format_html('<span style="color: #dc3545;">Expired</span>')
+        return format_html('<span style="color: #28a745;">Active</span>')
+    is_expired_display.short_description = "Status"

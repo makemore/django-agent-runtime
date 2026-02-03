@@ -38,6 +38,16 @@ from django_agent_runtime.persistence.models import (
     PersistenceTaskList,
     PersistenceTask,
     Preferences,
+    # Knowledge store models
+    Fact,
+    Summary,
+    Embedding,
+    # Audit store models
+    AuditEntry,
+    ErrorRecord,
+    PerformanceMetric,
+    # Shared memory models
+    SharedMemory,
 )
 
 # Import agent definition models
@@ -99,6 +109,16 @@ __all__ = [
     "PersistenceTaskList",
     "PersistenceTask",
     "Preferences",
+    # Knowledge store models
+    "Fact",
+    "Summary",
+    "Embedding",
+    # Audit store models
+    "AuditEntry",
+    "ErrorRecord",
+    "PerformanceMetric",
+    # Shared memory models
+    "SharedMemory",
     # Agent Definition models
     "AgentDefinition",
     "AgentVersion",
