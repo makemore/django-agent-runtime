@@ -18,6 +18,7 @@ from django_agent_runtime.models.base import (
     AbstractAgentFile,
     AbstractAgentTaskList,
     AbstractAgentTask,
+    AbstractMessage,
     TaskState,
 )
 from django_agent_runtime.models.concrete import (
@@ -28,6 +29,7 @@ from django_agent_runtime.models.concrete import (
     AgentFile,
     AgentTaskList,
     AgentTask,
+    Message,
 )
 
 # Import persistence models so Django can discover them
@@ -93,6 +95,7 @@ __all__ = [
     "AbstractAgentFile",
     "AbstractAgentTaskList",
     "AbstractAgentTask",
+    "AbstractMessage",
     "TaskState",
     # Concrete models (default implementation)
     "AgentConversation",
@@ -102,6 +105,7 @@ __all__ = [
     "AgentFile",
     "AgentTaskList",
     "AgentTask",
+    "Message",
     # Persistence models
     "Memory",
     "PersistenceConversation",

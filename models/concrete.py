@@ -15,6 +15,7 @@ from django_agent_runtime.models.base import (
     AbstractAgentFile,
     AbstractAgentTaskList,
     AbstractAgentTask,
+    AbstractMessage,
 )
 
 
@@ -199,3 +200,32 @@ class AgentTask(AbstractAgentTask):
     class Meta(AbstractAgentTask.Meta):
         abstract = False
         db_table = "agent_runtime_task"
+
+
+class Message(AbstractMessage):
+    """
+    Concrete implementation of normalized message storage.
+
+    Used when message_storage_mode is set to "normalized" on the agent definition.
+    Enables message-level queries, permissions, and linking to other models.
+    """
+
+    conversation = models.ForeignKey(
+        AgentConversation,
+        on_delete=models.CASCADE,
+        related_name="messages",
+        help_text="The conversation this message belongs to",
+    )
+
+    run = models.ForeignKey(
+        AgentRun,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="messages",
+        help_text="The run that produced this message (if any)",
+    )
+
+    class Meta(AbstractMessage.Meta):
+        abstract = False
+        db_table = "agent_runtime_message"

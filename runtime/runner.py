@@ -502,6 +502,15 @@ class AgentRunner:
             output=output,
         )
 
+        # Create normalized messages if using normalized storage mode
+        if ctx.conversation_id:
+            await self._maybe_create_normalized_messages(
+                run_id,
+                ctx.conversation_id,
+                ctx.input_messages,
+                result.final_messages,
+            )
+
         # Generate conversation title if this is the first run
         if ctx.conversation_id and self.settings.AUTO_GENERATE_CONVERSATION_TITLE:
             await self._maybe_generate_conversation_title(
@@ -531,6 +540,102 @@ class AgentRunner:
                 print(f"[agent-runner] Error in completion hook for run {run_id} (debug mode - re-raising): {e}", flush=True)
                 raise
             print(f"[agent-runner] Error in completion hook for run {run_id}: {e}", flush=True)
+
+    async def _maybe_create_normalized_messages(
+        self,
+        run_id: UUID,
+        conversation_id: UUID,
+        input_messages: list[Message],
+        final_messages: list[Message],
+    ) -> None:
+        """
+        Create normalized Message records if the conversation uses normalized storage mode.
+
+        This is called after a run completes successfully. It creates Message records
+        for both input messages (user messages) and output messages (assistant responses).
+        """
+        from asgiref.sync import sync_to_async
+        from django_agent_runtime.models import AgentConversation, AgentRun, Message
+
+        try:
+            # Get conversation and check storage mode
+            conversation = await sync_to_async(
+                AgentConversation.objects.get
+            )(id=conversation_id)
+
+            storage_mode = conversation.get_message_storage_mode()
+            if storage_mode != "normalized":
+                debug_print(f"Conversation {conversation_id} uses {storage_mode} storage, skipping normalized messages")
+                return
+
+            # Get the run
+            run = await sync_to_async(AgentRun.objects.get)(id=run_id)
+
+            # Get current max sequence number for this conversation
+            @sync_to_async
+            def get_next_seq():
+                from django.db.models import Max
+                max_seq = Message.objects.filter(conversation=conversation).aggregate(Max('seq'))['seq__max']
+                return (max_seq or 0) + 1
+
+            next_seq = await get_next_seq()
+
+            # Create messages for input (user messages)
+            messages_to_create = []
+            for msg in input_messages:
+                role = msg.get("role", "user")
+                # Skip system messages - they're not part of the conversation history
+                if role == "system":
+                    continue
+
+                messages_to_create.append(Message(
+                    conversation=conversation,
+                    run=None,  # Input messages aren't produced by this run
+                    role=role,
+                    content=msg.get("content"),
+                    tool_calls=msg.get("tool_calls"),
+                    tool_call_id=msg.get("tool_call_id"),
+                    name=msg.get("name"),
+                    seq=next_seq,
+                    metadata=msg.get("metadata", {}),
+                ))
+                next_seq += 1
+
+            # Create messages for output (assistant responses, tool results)
+            for msg in final_messages:
+                role = msg.get("role", "assistant")
+                # Skip system messages
+                if role == "system":
+                    continue
+
+                messages_to_create.append(Message(
+                    conversation=conversation,
+                    run=run,  # Output messages are produced by this run
+                    role=role,
+                    content=msg.get("content"),
+                    tool_calls=msg.get("tool_calls"),
+                    tool_call_id=msg.get("tool_call_id"),
+                    name=msg.get("name"),
+                    seq=next_seq,
+                    metadata=msg.get("metadata", {}),
+                ))
+                next_seq += 1
+
+            # Bulk create messages
+            if messages_to_create:
+                @sync_to_async
+                def bulk_create():
+                    Message.objects.bulk_create(messages_to_create)
+
+                await bulk_create()
+                debug_print(f"Created {len(messages_to_create)} normalized messages for conversation {conversation_id}")
+
+        except Exception as e:
+            # Don't fail the run if message creation fails
+            if not should_swallow_exceptions():
+                print(f"[agent-runner] Error creating normalized messages for run {run_id} (debug mode - re-raising): {e}", flush=True)
+                raise
+            print(f"[agent-runner] Error creating normalized messages for run {run_id}: {e}", flush=True)
 
     async def _maybe_generate_conversation_title(
         self,

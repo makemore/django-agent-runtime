@@ -71,6 +71,13 @@ class AgentRuntimeSettings:
     # Useful for limiting context window usage with long conversations
     MAX_HISTORY_MESSAGES: Optional[int] = None
 
+    # Message storage mode (system-wide default)
+    # Controls how conversation messages are stored:
+    # - "json": Messages stored in AgentRun.input/output JSON fields (default, current behavior)
+    # - "normalized": Messages stored as separate Message model records (enables message-level queries)
+    # Per-agent settings in AgentDefinition.message_storage_mode override this default.
+    MESSAGE_STORAGE_MODE: str = "json"
+
     # Auto-generate conversation titles
     # When True, automatically generates a short title for new conversations
     # based on the first user message and assistant response

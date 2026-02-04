@@ -15,6 +15,8 @@ from django_agent_runtime.models import (
     AgentRevision,
     AgentTool,
     AgentKnowledge,
+    # Normalized message model
+    Message,
     # Dynamic Tool models
     DiscoveredFunction,
     DynamicTool,
@@ -51,15 +53,103 @@ from django_agent_runtime.models import (
 )
 
 
+class MessageInline(admin.TabularInline):
+    """Inline for viewing normalized messages on a conversation."""
+
+    model = Message
+    extra = 0
+    readonly_fields = ["seq", "role", "content_preview", "run", "created_at"]
+    fields = ["seq", "role", "content_preview", "run", "created_at"]
+    can_delete = False
+    ordering = ["seq"]
+
+    def has_add_permission(self, request, obj=None):
+        return False
+
+    def content_preview(self, obj):
+        """Show a preview of the message content."""
+        content = obj.content
+        if content is None:
+            return "-"
+        if isinstance(content, str):
+            return content[:100] + "..." if len(content) > 100 else content
+        return str(content)[:100] + "..."
+    content_preview.short_description = "Content"
+
+
 @admin.register(AgentConversation)
 class AgentConversationAdmin(admin.ModelAdmin):
     """Admin for AgentConversation."""
 
-    list_display = ["id", "agent_key", "user", "title", "created_at"]
+    list_display = ["id", "agent_key", "user", "title", "message_count", "storage_mode", "created_at"]
     list_filter = ["agent_key", "created_at"]
     search_fields = ["id", "title", "user__email"]
     readonly_fields = ["id", "created_at", "updated_at"]
     raw_id_fields = ["user"]
+    inlines = [MessageInline]
+
+    def message_count(self, obj):
+        """Show the number of normalized messages (if using normalized storage)."""
+        return obj.messages.count()
+    message_count.short_description = "Messages"
+
+    def storage_mode(self, obj):
+        """Show the message storage mode for this conversation."""
+        return obj.get_message_storage_mode()
+    storage_mode.short_description = "Storage Mode"
+
+
+@admin.register(Message)
+class MessageAdmin(admin.ModelAdmin):
+    """Admin for Message - normalized conversation messages."""
+
+    list_display = ["id", "conversation_link", "seq", "role_badge", "content_preview", "run_link", "created_at"]
+    list_filter = ["role", "created_at"]
+    search_fields = ["conversation__id", "content"]
+    readonly_fields = ["id", "conversation", "run", "seq", "created_at"]
+    raw_id_fields = ["conversation", "run"]
+
+    def conversation_link(self, obj):
+        """Link to the conversation."""
+        from django.urls import reverse
+        url = reverse("admin:django_agent_runtime_agentconversation_change", args=[obj.conversation_id])
+        return format_html('<a href="{}">{}</a>', url, str(obj.conversation_id)[:8])
+    conversation_link.short_description = "Conversation"
+
+    def run_link(self, obj):
+        """Link to the run that produced this message."""
+        if not obj.run_id:
+            return "-"
+        from django.urls import reverse
+        url = reverse("admin:django_agent_runtime_agentrun_change", args=[obj.run_id])
+        return format_html('<a href="{}">{}</a>', url, str(obj.run_id)[:8])
+    run_link.short_description = "Run"
+
+    def role_badge(self, obj):
+        """Show role with color badge."""
+        colors = {
+            "user": "#28a745",      # green
+            "assistant": "#007bff", # blue
+            "tool": "#6c757d",      # gray
+            "system": "#dc3545",    # red
+        }
+        color = colors.get(obj.role, "#6c757d")
+        return format_html(
+            '<span style="background-color: {}; color: white; padding: 2px 8px; border-radius: 4px;">{}</span>',
+            color,
+            obj.role,
+        )
+    role_badge.short_description = "Role"
+
+    def content_preview(self, obj):
+        """Show a preview of the message content."""
+        content = obj.content
+        if content is None:
+            return "-"
+        if isinstance(content, str):
+            return content[:80] + "..." if len(content) > 80 else content
+        return str(content)[:80] + "..."
+    content_preview.short_description = "Content"
 
 
 class AgentEventInline(admin.TabularInline):

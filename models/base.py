@@ -140,6 +140,31 @@ class AbstractAgentConversation(models.Model):
         except Exception:
             return None
 
+    def get_message_storage_mode(self) -> str:
+        """
+        Get the effective message storage mode for this conversation.
+
+        Checks the agent definition first, then falls back to system default.
+
+        Returns:
+            "json" or "normalized"
+        """
+        from django_agent_runtime.conf import runtime_settings
+
+        # Try to get agent definition by agent_key (slug)
+        try:
+            from django_agent_runtime.models.definitions import AgentDefinition
+            agent_def = AgentDefinition.objects.filter(slug=self.agent_key).first()
+            if agent_def and agent_def.message_storage_mode:
+                return agent_def.message_storage_mode
+        except Exception:
+            pass
+
+        # Fall back to system default
+        # runtime_settings is a function that returns the settings object
+        settings = runtime_settings()
+        return getattr(settings, 'MESSAGE_STORAGE_MODE', 'json')
+
     def get_message_history(self, include_failed_runs: bool = False) -> list[dict]:
         """
         Get the full message history across all runs in this conversation.
@@ -148,6 +173,9 @@ class AbstractAgentConversation(models.Model):
         - Input messages from each run
         - Assistant responses (including tool calls)
         - Tool results
+
+        Automatically uses the appropriate storage backend based on the
+        message_storage_mode setting (json or normalized).
 
         Args:
             include_failed_runs: If True, include messages from failed runs.
@@ -161,6 +189,42 @@ class AbstractAgentConversation(models.Model):
                 {"role": "tool", "content": "...", "tool_call_id": "..."},
                 ...
             ]
+        """
+        storage_mode = self.get_message_storage_mode()
+
+        if storage_mode == "normalized":
+            return self._get_message_history_normalized(include_failed_runs)
+        else:
+            return self._get_message_history_json(include_failed_runs)
+
+    def _get_message_history_normalized(self, include_failed_runs: bool = False) -> list[dict]:
+        """
+        Get message history from the normalized Message model.
+        """
+        from django_agent_runtime.models.base import RunStatus
+
+        # Get messages ordered by sequence
+        messages_qs = self.messages.order_by("seq")
+
+        if not include_failed_runs:
+            # Exclude messages from failed runs
+            # Messages with no run (user input) are always included
+            messages_qs = messages_qs.filter(
+                models.Q(run__isnull=True) |
+                models.Q(run__status=RunStatus.SUCCEEDED)
+            )
+
+        messages = []
+        for msg in messages_qs:
+            msg_dict = msg.to_dict()
+            if msg_dict:
+                messages.append(msg_dict)
+
+        return messages
+
+    def _get_message_history_json(self, include_failed_runs: bool = False) -> list[dict]:
+        """
+        Get message history from JSON fields in AgentRun (original behavior).
         """
         from django_agent_runtime.models.base import RunStatus
 
@@ -838,4 +902,161 @@ class AbstractAgentFile(models.Model):
         """Get URL for downloading the file. Override in concrete class if needed."""
         from django.urls import reverse
         return reverse("agent-files-download", kwargs={"pk": str(self.id)})
+
+
+class MessageStorageMode(models.TextChoices):
+    """
+    Storage mode for conversation messages.
+
+    Controls how messages are stored for a conversation:
+    - JSON: Messages stored in AgentRun.input/output JSON fields (default, current behavior)
+    - NORMALIZED: Messages stored as separate Message model records (enables message-level queries)
+    """
+
+    JSON = "json", "JSON (in AgentRun)"
+    NORMALIZED = "normalized", "Normalized (Message model)"
+
+
+class AbstractMessage(models.Model):
+    """
+    Abstract model for individual conversation messages.
+
+    This model enables normalized message storage as an alternative to
+    storing messages as JSON within AgentRun. Use this when you need:
+    - Message-level queries (search, filter by role, etc.)
+    - Message-level permissions
+    - Linking other models to specific messages
+    - Efficient handling of very long conversations
+
+    The storage mode is configured per-agent via AgentDefinition.message_storage_mode
+    or system-wide via MESSAGE_STORAGE_MODE setting.
+
+    Note: This is separate from PersistenceMessage which is for the
+    agent_runtime_core persistence layer compatibility.
+    """
+
+    class Role(models.TextChoices):
+        """Message role choices."""
+        SYSTEM = "system", "System"
+        USER = "user", "User"
+        ASSISTANT = "assistant", "Assistant"
+        TOOL = "tool", "Tool"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    # Relationships (concrete model defines FKs)
+    # conversation = models.ForeignKey(AgentConversation, ...)
+    # run = models.ForeignKey(AgentRun, ..., null=True)  # Which run produced this message
+
+    # Message content
+    role = models.CharField(
+        max_length=20,
+        choices=Role.choices,
+        db_index=True,
+        help_text="Message role (system, user, assistant, tool)",
+    )
+    content = models.JSONField(
+        default=str,
+        blank=True,
+        help_text="Message content (string, dict, or list for structured content)",
+    )
+
+    # Tool-related fields
+    tool_calls = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="Tool calls made by assistant (for assistant messages)",
+    )
+    tool_call_id = models.CharField(
+        max_length=255,
+        blank=True,
+        help_text="Tool call ID this message responds to (for tool messages)",
+    )
+    name = models.CharField(
+        max_length=255,
+        blank=True,
+        help_text="Name of the tool (for tool messages)",
+    )
+
+    # Ordering
+    seq = models.PositiveIntegerField(
+        db_index=True,
+        help_text="Sequence number within conversation (for ordering)",
+    )
+
+    # Timestamps
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    # Metadata
+    metadata = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Additional metadata (model, usage, etc.)",
+    )
+
+    class Meta:
+        abstract = True
+        ordering = ["seq"]
+        verbose_name = "Message"
+        verbose_name_plural = "Messages"
+
+    def __str__(self):
+        content_preview = str(self.content)[:50] if self.content else ""
+        return f"{self.role}: {content_preview}..."
+
+    def to_dict(self) -> dict:
+        """
+        Convert to the framework-neutral Message format.
+
+        Returns:
+            Dict compatible with agent_runtime_core.interfaces.Message
+        """
+        result = {
+            "role": self.role,
+        }
+
+        # Handle content (can be string, dict, or list)
+        if self.content is not None:
+            result["content"] = self.content
+
+        # Optional fields - only include if present
+        if self.name:
+            result["name"] = self.name
+
+        if self.tool_call_id:
+            result["tool_call_id"] = self.tool_call_id
+
+        if self.tool_calls:
+            result["tool_calls"] = self.tool_calls
+
+        if self.metadata:
+            result["metadata"] = self.metadata
+
+        return result
+
+    @classmethod
+    def from_dict(cls, data: dict, conversation, run=None, seq: int = 0) -> "AbstractMessage":
+        """
+        Create a Message instance from a dict.
+
+        Args:
+            data: Message dict in framework-neutral format
+            conversation: AgentConversation instance
+            run: Optional AgentRun instance that produced this message
+            seq: Sequence number for ordering
+
+        Returns:
+            Unsaved Message instance
+        """
+        return cls(
+            conversation=conversation,
+            run=run,
+            role=data.get("role", "user"),
+            content=data.get("content", ""),
+            tool_calls=data.get("tool_calls", []),
+            tool_call_id=data.get("tool_call_id", ""),
+            name=data.get("name", ""),
+            seq=seq,
+            metadata=data.get("metadata", {}),
+        )
 

@@ -118,10 +118,31 @@ class AgentDefinition(models.Model):
     # Status
     is_active = models.BooleanField(default=True)
 
+    # ==========================================================================
+    # Message Storage Configuration
+    # ==========================================================================
+
+    class MessageStorageMode(models.TextChoices):
+        """Storage mode for conversation messages."""
+        JSON = "json", "JSON (in AgentRun)"
+        NORMALIZED = "normalized", "Normalized (Message model)"
+
+    message_storage_mode = models.CharField(
+        max_length=20,
+        choices=MessageStorageMode.choices,
+        blank=True,
+        help_text=(
+            "How to store conversation messages for this agent. "
+            "Leave blank to use system default (MESSAGE_STORAGE_MODE setting). "
+            "JSON: Messages stored in AgentRun.input/output fields (default). "
+            "Normalized: Messages stored as separate Message records (enables message-level queries)."
+        ),
+    )
+
     # Timestamps
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
-    
+
     class Meta:
         ordering = ['-updated_at']
         verbose_name = "Agent Definition"
